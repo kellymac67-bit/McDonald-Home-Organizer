@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -323,12 +323,15 @@ async function pollCommands() {
       let status = 'done', result = '';
       try {
         const row = catalog.get(c.entity_id), s = settings.get(c.entity_id);
-        const maxAge = c.action === 'unlock' ? 30e3 : COMMAND_MAX_AGE_MS;   // a late unlock is never carried out
+        const maxAge = ['unlock', 'open'].includes(c.action) ? 30e3 : COMMAND_MAX_AGE_MS;   // a late unlock/open is never carried out
         if (Date.now() - Date.parse(c.requested_at) > maxAge) throw new Error('Expired — the house was offline');
         if (!row || !s?.enabled) throw new Error('Device not available');
         if (c.action === 'snapshot') {
           if (row.kind !== 'camera') throw new Error('Not a camera');
           await takeSnapshot(c.entity_id, 'request');
+        } else if (c.action === 'open' || c.action === 'close') {
+          if (row.kind !== 'cover') throw new Error('Not a garage door');
+          await haCall({ type: 'call_service', domain: 'cover', service: c.action === 'open' ? 'open_cover' : 'close_cover', target: { entity_id: c.entity_id } });
         } else if (c.action === 'lock' || c.action === 'unlock') {
           if (row.kind !== 'lock') throw new Error('Not a lock');
           await haCall({ type: 'call_service', domain: 'lock', service: c.action, target: { entity_id: c.entity_id } });
