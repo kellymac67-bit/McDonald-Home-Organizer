@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '1.2.0';
+const VERSION = '1.3.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -12,7 +12,7 @@ const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
 // ---------- state ----------
 const S = {
   email: '', me: null,
-  members: [], categories: [], locations: [], boxes: [], items: [], photos: [],
+  members: [], categories: [], locations: [], boxes: [], items: [], photos: [], devices: [], bridge: null, areaLinks: [],
   loadedAt: 0, q: '', cat: '', sub: '', cleanup: null, urls: new Map(),
 };
 const ix = { catKids: new Map(), cat: new Map(), loc: new Map(), box: new Map(), boxByCode: new Map(), locByCode: new Map(),
@@ -70,6 +70,7 @@ async function loadAll() {
     fetchAll('boxes'), fetchAll('items'), fetchAll('photos'),
   ]);
   Object.assign(S, { members, categories, locations, boxes, items, photos, loadedAt: Date.now() });
+  try { await loadDevices(); } catch {}
   S.me = members.find(m => m.email === S.email) || null;
   reindex();
 }
@@ -106,13 +107,26 @@ const firstPhoto = b => (ix.photosByBox.get(b.id) || [])[0];
 // signed photo URLs, fetched in batches for whatever is on screen
 async function hydrate(root = document) {
   const imgs = $$('img[data-path]', root).filter(i => !i.src);
-  const need = [...new Set(imgs.map(i => i.dataset.path))].filter(p => { const c = S.urls.get(p); return !c || c.exp < Date.now(); });
-  for (let i = 0; i < need.length; i += 100) {
-    const chunk = need.slice(i, i + 100);
-    const { data } = await sb.storage.from('photos').createSignedUrls(chunk, 6 * 3600);
-    (data || []).forEach(d => d.signedUrl && S.urls.set(d.path, { url: d.signedUrl, exp: Date.now() + 5.5 * 3600e3 }));
+  const bucketOf = i => i.dataset.bucket || 'photos';
+  const key = (b, p) => `${b}|${p}`;
+  const byBucket = new Map();
+  for (const i of imgs) {
+    const b = bucketOf(i), c = S.urls.get(key(b, i.dataset.path));
+    if (c && c.exp > Date.now()) continue;
+    if (!byBucket.has(b)) byBucket.set(b, new Set());
+    byBucket.get(b).add(i.dataset.path);
   }
-  imgs.forEach(i => { const c = S.urls.get(i.dataset.path); if (c) i.src = c.url; });
+  for (const [b, set] of byBucket) {
+    const need = [...set];
+    for (let i = 0; i < need.length; i += 100) {
+      const { data } = await sb.storage.from(b).createSignedUrls(need.slice(i, i + 100), 6 * 3600);
+      (data || []).forEach(d => d.signedUrl && S.urls.set(key(b, d.path), { url: d.signedUrl, exp: Date.now() + 5.5 * 3600e3 }));
+    }
+  }
+  imgs.forEach(i => {
+    const c = S.urls.get(key(bucketOf(i), i.dataset.path));
+    if (c) i.src = c.url + (i.dataset.ver ? `&v=${encodeURIComponent(i.dataset.ver)}` : '');
+  });
 }
 
 // ---------- navigation ----------
@@ -135,10 +149,12 @@ const ICON = {
   places: '<svg viewBox="0 0 24 24"><path d="M4 3v18M20 3v18M4 8h16M4 14h16M4 20h16"/></svg>',
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h2v2H8zM14 9h2v2h-2zM8 14h2v2H8zM14 14h2v2h-2z"/></svg>',
   add: '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 11h18M12 13v5M9.5 15.5h5M7 7l2-3h6l2 3"/></svg>',
+  home: '<svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
 };
 function tabs(active) {
-  const t = [['/', 'Search', 'search'], ['/places', 'Places', 'places'], ['/scan', 'Scan', 'scan'], ['/new', 'New box', 'add'], ['/more', 'More', 'more']];
+  const t = [['/', 'Search', 'search'], ['/places', 'Places', 'places'], ['/scan', 'Scan', 'scan'], ['/new', 'New box', 'add'],
+    ...(S.devices?.length || S.bridge ? [['/home', 'Home', 'home']] : []), ['/more', 'More', 'more']];
   const nav = $('#tabs'); nav.hidden = false;
   nav.innerHTML = `<div class="in">${t.map(([href, label, ic]) =>
     `<a href="${href}" class="t-${ic}" ${active === ic ? 'aria-current="page"' : ''}>${ic === 'scan' ? `<span class="ring">${ICON[ic]}</span>` : ICON[ic]}${label}</a>`).join('')}</div>`;
@@ -152,6 +168,7 @@ const view = () => $('#view');
 const routes = [
   [/^\/$/, viewHome], [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
+  [/^\/home$/, viewDevicesHome], [/^\/devices$/, viewDeviceAdmin],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -293,6 +310,266 @@ async function openViewer(list, i, rerender) {
     await hydrate(v);
   };
   document.body.appendChild(v); show();
+}
+
+// ---------- HOME DEVICES (cameras, switches, sensors from Home Assistant) ----------
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const canCams = () => !!(S.me?.is_admin || S.me?.see_cameras);
+const canControl = () => !!(S.me?.is_admin || S.me?.can_control);
+async function loadDevices() {
+  const [d, st, al] = await Promise.all([
+    sb.from('ha_devices').select('*').order('name'),
+    sb.from('ha_bridge_status').select('*').eq('id', 1).maybeSingle(),
+    sb.from('ha_area_links').select('*'),
+  ]);
+  S.devices = d.error ? [] : d.data;
+  S.bridge = st.error ? null : st.data;
+  S.areaLinks = al.error ? [] : al.data;
+  S.devicesAt = Date.now();
+}
+const shownDevices = () => (S.devices || []).filter(d => d.enabled);
+const bridgeOnline = () => !!S.bridge?.last_seen && Date.now() - Date.parse(S.bridge.last_seen) < 3 * 60e3;
+function relTime(t) {
+  if (!t) return 'never';
+  const s = (Date.now() - Date.parse(t)) / 1000;
+  if (s < 60) return 'just now';
+  if (s < 3600) return `${Math.round(s / 60)} min ago`;
+  if (s < 86400) return `${Math.round(s / 3600)} hr ago`;
+  return fmtDate(t);
+}
+const devName = d => d.display_name || d.name.replace(/\s+live view$/i, '').trim() || d.entity_id;
+const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉' };
+function devIcon(d) {
+  if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
+  if (d.kind === 'binary_sensor') return { moisture: '💧', door: '🚪', window: '🪟', garage_door: '🚗', opening: '🚪', motion: '🏃', smoke: '🔥', gas: '⚠️' }[d.device_class] || '◉';
+  return DEV_ICON[d.kind] || '•';
+}
+const BIN_TEXT = { door: ['Open', 'Closed'], window: ['Open', 'Closed'], opening: ['Open', 'Closed'], garage_door: ['Open', 'Closed'],
+  moisture: ['Water!', 'Dry'], motion: ['Motion', 'Clear'], occupancy: ['Occupied', 'Clear'], presence: ['Home', 'Away'], smoke: ['Smoke!', 'Clear'],
+  gas: ['Gas!', 'Clear'], cold: ['Cold!', 'OK'], heat: ['Hot!', 'OK'], problem: ['Problem', 'OK'], safety: ['Unsafe', 'OK'], lock: ['Unlocked', 'Locked'],
+  vibration: ['Vibration', 'Still'], tamper: ['Tampered', 'OK'] };
+const ALARM_CLASSES = ['moisture', 'smoke', 'gas', 'cold', 'heat', 'problem', 'safety', 'tamper'];
+function devValue(d) {
+  const st = d.state;
+  if (!st || st === 'unavailable' || st === 'unknown') return { text: 'Offline', cls: 'off' };
+  if (d.kind === 'sensor') {
+    const n = parseFloat(st);
+    if (isNaN(n)) return { text: st };
+    const u = d.unit || d.attributes?.unit_of_measurement || '';
+    return { text: `${Math.round(n * 10) / 10}${u === '%' ? '%' : u ? ' ' + u : ''}` };
+  }
+  if (d.kind === 'binary_sensor') {
+    const on = st === 'on'; const t = BIN_TEXT[d.device_class] || ['On', 'Off'];
+    return { text: on ? t[0] : t[1], cls: on && ALARM_CLASSES.includes(d.device_class) ? 'alarm' : on ? 'on' : '' };
+  }
+  if (d.kind === 'lock') return { text: st === 'locked' ? 'Locked' : st === 'unlocked' ? 'Unlocked' : st, cls: st === 'unlocked' ? 'on' : '' };
+  if (d.kind === 'cover') return { text: st[0].toUpperCase() + st.slice(1), cls: st === 'open' ? 'on' : '' };
+  return { text: st };
+}
+function devPlace(d) { return d.location_id ? locTrail(d.location_id) : []; }
+
+function camTile(d) {
+  const recent = d.last_motion && Date.now() - Date.parse(d.last_motion) < 15 * 60e3;
+  return `<button class="camtile" data-cam="${esc(d.entity_id)}">
+    ${d.snapshot_path ? `<img data-bucket="cams" data-path="${esc(d.snapshot_path)}" data-ver="${esc(d.snapshot_at || '')}" alt="">` : '<div class="ph">No picture yet — tap to take one</div>'}
+    ${recent ? `<span class="mot">Motion ${esc(relTime(d.last_motion))}</span>` : ''}
+    <span class="cap">${esc(devName(d))}${d.snapshot_at ? ` · ${esc(relTime(d.snapshot_at))}` : ''}</span></button>`;
+}
+function devRow(d, showRoom) {
+  const room = showRoom ? devPlace(d).slice(1).map(l => l.name).join(' › ') : '';
+  const sub = [room, d.kind === 'switch' || d.kind === 'light' ? (d.last_changed ? `changed ${relTime(d.last_changed)}` : '') : d.last_changed ? `updated ${relTime(d.last_changed)}` : '']
+    .filter(Boolean).join(' · ');
+  let right;
+  if (d.kind === 'switch' || d.kind === 'light') {
+    const off = !d.state || d.state === 'unavailable';
+    right = off ? '<span class="val off">Offline</span>'
+      : `<button class="tgl" role="switch" aria-label="${esc(devName(d))}" aria-checked="${d.state === 'on'}" data-tgl="${esc(d.entity_id)}" ${canControl() ? '' : 'disabled'}></button>`;
+  } else { const v = devValue(d); right = `<span class="val ${v.cls || ''}">${esc(v.text)}</span>`; }
+  return `<div class="devrow"><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}</div>`;
+}
+const KIND_ORDER = { switch: 1, light: 1, lock: 2, cover: 2, binary_sensor: 3, sensor: 4 };
+function devicesBlock(list, { showRoom = true } = {}) {
+  const cams = list.filter(d => d.kind === 'camera' && canCams());
+  const rest = list.filter(d => d.kind !== 'camera').sort((a, b) => (KIND_ORDER[a.kind] || 9) - (KIND_ORDER[b.kind] || 9) || devName(a).localeCompare(devName(b)));
+  return `${cams.length ? `<div class="cams">${cams.map(camTile).join('')}</div>` : ''}
+    ${rest.length ? `<div class="list">${rest.map(d => devRow(d, showRoom)).join('')}</div>` : ''}`;
+}
+function wireDevices(root, redraw) {
+  $$('[data-cam]', root).forEach(b => b.onclick = () => openCamera(S.devices.find(d => d.entity_id === b.dataset.cam), redraw));
+  $$('[data-tgl]', root).forEach(b => b.onclick = async () => {
+    const d = S.devices.find(x => x.entity_id === b.dataset.tgl); if (!d || b.classList.contains('busy')) return;
+    const want = d.state === 'on' ? 'turn_off' : 'turn_on';
+    b.classList.add('busy'); b.setAttribute('aria-checked', String(want === 'turn_on'));
+    const ok = await sendCommand(d, want);
+    if (ok) { d.state = want === 'turn_on' ? 'on' : 'off'; d.last_changed = new Date().toISOString(); }
+    await sleep(ok ? 2500 : 0); await loadDevices().catch(() => {}); redraw();
+  });
+  hydrate(root);
+}
+async function sendCommand(d, action) {
+  if (!bridgeOnline()) toast('The house looks offline — trying anyway…', 3000);
+  let row;
+  try { row = await run(sb.from('ha_commands').insert({ entity_id: d.entity_id, action }).select().single()); } catch { return false; }
+  for (let i = 0; i < (action === 'snapshot' ? 50 : 20); i++) {
+    await sleep(1000);
+    const { data } = await sb.from('ha_commands').select('status, result').eq('id', row.id).maybeSingle();
+    if (data?.status === 'done') return true;
+    if (data?.status === 'failed') { toast(data.result || "That didn't work", 4000); return false; }
+  }
+  toast('No answer from the house yet — it may be offline', 4000);
+  return false;
+}
+function openImage(path, caption) {
+  const v = document.createElement('div'); v.className = 'viewer'; v.id = 'viewer';
+  v.innerHTML = `<div class="bar"><button class="btn sm" data-x>Close</button><span style="color:#fff;align-self:center">${esc(caption || '')}</span><span></span></div><img data-bucket="cams" data-path="${esc(path)}" alt="">`;
+  $('[data-x]', v).onclick = () => v.remove();
+  document.body.appendChild(v); hydrate(v);
+}
+async function openCamera(d, redraw) {
+  if (!d) return;
+  const live = d.platform === 'ring' ? '<a class="btn" href="https://account.ring.com/account/dashboard" target="_blank" rel="noopener">Live in Ring</a>' : '';
+  const s = sheet(`<h3>${esc(devName(d))}</h3>
+    <div class="camview" id="camImg"></div>
+    <div class="small muted" id="camMeta"></div>
+    <div class="row"><button class="btn primary grow" id="camRef">Take a new picture</button>${live}</div>
+    ${d.on_battery ? '<div class="small muted">Battery camera — pictures are taken on motion or when you ask, to save its battery.</div>' : ''}
+    <div class="lab">Recent motion</div><div class="photos" id="camHist"><p class="muted small">Loading…</p></div>`);
+  const draw = () => {
+    const cur = S.devices.find(x => x.entity_id === d.entity_id) || d;
+    $('#camImg', s).innerHTML = cur.snapshot_path ? `<img data-bucket="cams" data-path="${esc(cur.snapshot_path)}" data-ver="${esc(cur.snapshot_at || '')}" alt="">` : '<div class="camph">No picture yet</div>';
+    $('#camMeta', s).textContent = [cur.snapshot_at ? `Picture taken ${relTime(cur.snapshot_at)}` : '', cur.last_motion ? `last motion ${relTime(cur.last_motion)}` : ''].filter(Boolean).join(' · ');
+    hydrate(s);
+  };
+  draw();
+  $('#camRef', s).onclick = async () => {
+    const b = $('#camRef', s); b.disabled = true; b.textContent = 'Asking the camera…';
+    const ok = await sendCommand(d, 'snapshot');
+    await loadDevices().catch(() => {});
+    if ($('#camRef', s)) { b.disabled = false; b.textContent = 'Take a new picture'; draw(); }
+    if (ok) toast('New picture'); redraw?.();
+  };
+  const { data } = await sb.from('ha_snapshots').select('*').eq('entity_id', d.entity_id).order('taken_at', { ascending: false }).limit(12);
+  const h = $('#camHist', s); if (!h) return;
+  h.innerHTML = (data || []).map((p, i) => `<button data-snap="${i}"><img data-bucket="cams" data-path="${esc(p.path)}" alt=""></button>`).join('')
+    || '<p class="muted small" style="grid-column:1/-1">No motion pictures in the last few days.</p>';
+  $$('[data-snap]', h).forEach(b => b.onclick = () => { const p = data[+b.dataset.snap]; openImage(p.path, `${devName(d)} · ${new Date(p.taken_at).toLocaleString()}`); });
+  hydrate(h);
+}
+function statusLine() {
+  if (!S.bridge) return '<div class="hstatus bad"><span class="sdot"></span>The house hasn\'t connected yet</div>';
+  const on = bridgeOnline();
+  return `<div class="hstatus ${on ? 'ok' : 'bad'}"><span class="sdot"></span>${on ? 'House connected' : 'House offline'} <span class="muted small">· ${on ? 'checked' : 'last heard'} ${esc(relTime(S.bridge.last_seen))}</span></div>`;
+}
+function pollDevices(redraw, ms = 10000) {
+  const t = setInterval(async () => { if (document.visibilityState !== 'visible' || $('#sheet')) return; try { await loadDevices(); redraw(); } catch {} }, ms);
+  return () => clearInterval(t);
+}
+function viewDevicesHome(params) {
+  header('Home'); tabs('home');
+  let filter = params.get('show') || 'all';
+  view().innerHTML = `<div id="hstat"></div><div class="chips" id="hf"></div><div id="hdevs" style="display:flex;flex-direction:column;gap:14px"></div>`;
+  const draw = () => {
+    if (!$('#hdevs')) return;
+    $('#hstat').innerHTML = statusLine();
+    const opts = [['all', 'All'], ...(canCams() ? [['cams', 'Cameras']] : []), ['switches', 'Switches'], ['sensors', 'Sensors']];
+    $('#hf').innerHTML = opts.map(([k, l]) => `<button class="chip" data-f="${k}" aria-pressed="${filter === k}">${l}</button>`).join('');
+    $$('#hf [data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; history.replaceState(history.state, '', filter === 'all' ? '/home' : `/home?show=${filter}`); draw(); });
+    const match = d => filter === 'all' || (filter === 'cams' ? d.kind === 'camera' : filter === 'switches' ? ['switch', 'light'].includes(d.kind) : ['sensor', 'binary_sensor', 'lock', 'cover'].includes(d.kind));
+    const list = shownDevices().filter(d => (d.kind !== 'camera' || canCams()) && match(d));
+    const groups = new Map();
+    for (const d of list) {
+      const b = devPlace(d)[0];
+      const key = b ? b.id : 'area:' + (d.ha_area || '');
+      if (!groups.has(key)) groups.set(key, { b, area: d.ha_area, items: [] });
+      groups.get(key).items.push(d);
+    }
+    const order = buildings().map(b => b.id);
+    const keys = [...groups.keys()].sort((x, y) => {
+      const ix_ = order.indexOf(x), iy = order.indexOf(y);
+      if (ix_ >= 0 || iy >= 0) return (ix_ < 0 ? 999 : ix_) - (iy < 0 ? 999 : iy);
+      return x.localeCompare(y);
+    });
+    $('#hdevs').innerHTML = keys.map(k => {
+      const g = groups.get(k);
+      const title = g.b ? `<a href="/loc/${esc(g.b.code)}" style="color:inherit;text-decoration:none">${esc(g.b.name)} ›</a>` : `${esc(g.area || 'No area')} ${S.me.is_admin ? '<a class="small" href="/devices">link to a building</a>' : ''}`;
+      return `<div class="card"><h2>${title}<span class="count">${g.items.length}</span></h2>${devicesBlock(g.items, { showRoom: !!g.b })}</div>`;
+    }).join('') || `<div class="card center"><p class="muted" style="margin:0">${S.devices?.length ? 'Nothing to show here.' : 'No devices yet. Once the Home Assistant bridge is running, cameras, switches and sensors appear here.'}</p></div>`;
+    wireDevices($('#hdevs'), draw);
+  };
+  draw();
+  S.cleanup = pollDevices(draw);
+  loadDevices().then(draw).catch(() => {});
+}
+function locDevicesCard(l) {
+  const ids = descendants(l.id);
+  const list = shownDevices().filter(d => ids.has(d.location_id) && (d.kind !== 'camera' || canCams()));
+  if (!list.length) return '';
+  return `<div class="card"><h2>Cameras &amp; devices <span class="count">${list.length}</span></h2>${devicesBlock(list, { showRoom: l.kind === 'building' })}</div>`;
+}
+
+// Admin: which devices show, where they go, names, camera picture schedule
+function viewDeviceAdmin(params) {
+  header('Home devices', { backBtn: true }); tabs('more');
+  if (!S.me.is_admin) { view().innerHTML = '<div class="card">Only an admin can change device settings.</div>'; return; }
+  let q = '', showHidden = params.get('hidden') === '1';
+  view().innerHTML = `<div class="card">${statusLine()}
+      ${S.bridge ? `<div class="small muted">Bridge ${esc(S.bridge.version)} · Home Assistant ${esc(S.bridge.ha_version)} · ${esc(S.bridge.message)}</div>` : ''}</div>
+    <div class="card" style="padding:10px 14px 4px"><h2>Home Assistant areas</h2>
+      <p class="small muted" style="margin:0">Link each area to a building or room. Everything in that area — now and later — shows on that page.</p>
+      <div class="list" id="areas"></div></div>
+    <div class="card" style="padding:10px 14px 4px"><h2>Devices <span class="count" id="dcount"></span></h2>
+      <input type="search" id="dq" placeholder="Search devices…">
+      <label class="chk"><input type="checkbox" id="dHidden" ${showHidden ? 'checked' : ''}> Include hidden devices</label>
+      <div class="list" id="dlist"></div></div>
+    <p class="small muted">Only devices that have an Area in Home Assistant are sent to the app. To add or remove one entirely, set or clear its Area in Home Assistant.</p>`;
+  const placeOpts = sel => `<option value="">— Not linked —</option>${locOptions(sel || '', null, ['building', 'room'])}`;
+  const draw = () => {
+    if (!$('#dlist')) return;
+    const areas = [...new Set((S.devices || []).map(d => d.ha_area).filter(Boolean))].sort();
+    $('#areas').innerHTML = areas.map(a => {
+      const link = S.areaLinks.find(x => x.ha_area.toLowerCase() === a.toLowerCase());
+      const devs = S.devices.filter(d => d.ha_area === a);
+      const cur = link?.location_id || (devs.every(d => d.location_id === devs[0].location_id) ? devs[0].location_id : '');
+      return `<div class="locrow"><div><div class="nm">${esc(a)}</div><div class="small muted">${plural(devs.length, 'device')}</div></div>
+        <select data-area="${esc(a)}" style="max-width:200px">${placeOpts(cur)}</select></div>`;
+    }).join('') || '<p class="muted small">No areas yet.</p>';
+    $$('[data-area]').forEach(sel => sel.onchange = async () => {
+      const a = sel.dataset.area, loc = sel.value || null;
+      if (loc) await run(sb.from('ha_area_links').upsert({ ha_area: a, location_id: loc }));
+      else await run(sb.from('ha_area_links').delete().eq('ha_area', a));
+      await run(sb.from('ha_devices').update({ location_id: loc }).eq('ha_area', a));
+      await loadDevices(); toast(loc ? `${a} → ${locText(loc)}` : `${a} unlinked`); draw();
+    });
+    const t = norm(q);
+    const list = (S.devices || []).filter(d => (showHidden || d.enabled) && (!t || norm([devName(d), d.name, d.entity_id, d.ha_area, d.device_name].join(' ')).includes(t)))
+      .sort((a, b) => (a.ha_area || '').localeCompare(b.ha_area || '') || (KIND_ORDER[a.kind] || 0) - (KIND_ORDER[b.kind] || 0) || devName(a).localeCompare(devName(b)));
+    $('#dcount').textContent = list.length;
+    $('#dlist').innerHTML = list.map(d => `<div class="devrow" data-dev="${esc(d.entity_id)}" style="cursor:pointer${d.enabled ? '' : ';opacity:.55'}"><span class="ic">${devIcon(d)}</span>
+      <div class="grow" style="min-width:0"><div class="nm">${esc(devName(d))}</div><div class="small muted" style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${esc([d.location_id ? locText(d.location_id) : d.ha_area || 'No area', d.kind === 'camera' ? (d.snapshot_minutes ? `picture every ${d.snapshot_minutes} min` : 'pictures on motion only') : ''].filter(Boolean).join(' · '))}</div></div>
+      <span class="pill">${d.enabled ? 'Shown' : 'Hidden'}</span></div>`).join('') || '<p class="muted small">No devices match.</p>';
+    $$('[data-dev]').forEach(el => el.onclick = () => editDevice(S.devices.find(d => d.entity_id === el.dataset.dev), draw));
+  };
+  $('#dq').oninput = e => { q = e.target.value; draw(); };
+  $('#dHidden').onchange = e => { showHidden = e.target.checked; history.replaceState(history.state, '', showHidden ? '/devices?hidden=1' : '/devices'); draw(); };
+  draw();
+  loadDevices().then(draw).catch(() => {});
+}
+function editDevice(d, done) {
+  const s = sheet(`<h3>${esc(devName(d))}</h3>
+    <div class="small muted">${esc(d.entity_id)}${d.device_name ? ` · ${esc(d.device_name)}` : ''}${d.ha_area ? ` · HA area: ${esc(d.ha_area)}` : ''}</div>
+    <label class="chk"><input type="checkbox" id="vEn" ${d.enabled ? 'checked' : ''}> Show in the app</label>
+    <label class="f">Name in the app<input id="vName" value="${esc(d.display_name)}" placeholder="${esc(d.name.replace(/\s+live view$/i, ''))}"></label>
+    <label class="f">Building or room<select id="vLoc"><option value="">— Not linked —</option>${locOptions(d.location_id || '', null, ['building', 'room'])}</select></label>
+    ${d.kind === 'camera' ? `<label class="f">Take a picture<select id="vSnap">${[[0, 'Only on motion or when asked'], [5, 'Every 5 minutes'], [10, 'Every 10 minutes'], [15, 'Every 15 minutes'], [30, 'Every 30 minutes'], [60, 'Every hour']]
+      .map(([v, l]) => `<option value="${v}" ${d.snapshot_minutes === v ? 'selected' : ''}>${l}</option>`).join('')}</select></label>
+      ${d.on_battery ? '<div class="small muted">Battery camera — frequent pictures drain its battery.</div>' : ''}` : ''}
+    <button class="btn primary" id="vSave">Save</button>`);
+  $('#vSave', s).onclick = async () => {
+    const patch = { enabled: $('#vEn', s).checked, display_name: $('#vName', s).value.trim(), location_id: $('#vLoc', s).value || null };
+    const snap = $('#vSnap', s); if (snap) patch.snapshot_minutes = +snap.value;
+    const row = await run(sb.from('ha_devices').update(patch).eq('entity_id', d.entity_id).select().single());
+    Object.assign(d, row); closeSheet(); toast('Saved'); done();
+  };
 }
 
 // ---------- SEARCH (home) ----------
@@ -549,6 +826,7 @@ async function viewLoc(code) {
     <div class="hero"><div class="row"><span class="bigcode">${esc(l.code)}</span><span class="pill">${KIND_LABEL[kind]}${kind === 'shelf' && total > 1 ? ` · ${total} levels` : ''}</span></div>
       <input class="title" id="lname" value="${esc(l.name)}" ${canEdit ? '' : 'disabled'}></div>
     ${kind === 'shelf' ? `<div class="row"><a class="btn primary grow" href="/scan?to=${encodeURIComponent(l.code)}">Scan boxes onto this shelf</a><button class="btn" id="pickBoxes">Pick boxes</button></div>` : ''}
+    <div id="ldevs"></div>
     ${roomsCard}${shelvesCard}${boxesCard()}
     <div class="card"><h2>Photos</h2>${photoGrid(photos, 'locPhotos')}</div>
     <div class="card"><h2>Details</h2>
@@ -587,6 +865,9 @@ async function viewLoc(code) {
       closeSheet(); toast(`${plural(ids.length, 'box')} moved${lvl ? ` to level ${lvl}` : ' here'}`); rerender();
     };
   };
+  const drawDevs = () => { const el = $('#ldevs'); if (!el) return; el.innerHTML = locDevicesCard(l); el.hidden = !el.innerHTML; wireDevices(el, drawDevs); };
+  drawDevs();
+  if (kind !== 'shelf' && shownDevices().some(d => descendants(l.id).has(d.location_id))) S.cleanup = pollDevices(drawDevs);
   const dl = $('#delLoc'); if (dl) dl.onclick = async () => {
     const n = boxesIn(descendants(l.id)).length;
     if (!confirm(`Delete ${l.name}?${n ? ` ${plural(n, 'box')} will be left with no place.` : ''}${kids.length ? ' What\'s inside it moves up a level.' : ''}`)) return;
@@ -813,6 +1094,7 @@ function viewMore() {
       <a class="locrow" href="/labels"><span class="nm">Labels to print</span><span class="count">${unl}</span></a>
       <a class="locrow" href="/categories"><span class="nm">Categories</span><span class="count">${S.categories.length}</span></a>
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
+      ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
       <a class="locrow" href="#" id="exp"><span class="nm">Download everything (spreadsheet)</span><span class="muted">CSV</span></a>
     </div></div>
     <details class="card"><summary class="lab" style="cursor:pointer">Put this app on your phone's home screen</summary>
@@ -916,7 +1198,7 @@ function viewCats() {
 function viewFamily() {
   header('Family members', { backBtn: true }); tabs('more');
   const admin = S.me.is_admin;
-  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${S.members.map(m => `<div class="locrow" ${admin ? `data-m="${esc(m.email)}" style="cursor:pointer"` : ''}><div><div class="nm">${esc(m.name || m.email)}${m.email === S.me.email ? ' <span class="muted small">(you)</span>' : ''}</div><div class="small muted">${esc(m.email)}</div></div><div class="row" style="gap:4px">${m.is_admin ? '<span class="pill">Admin</span>' : ''}${m.see_private || m.is_admin ? '<span class="pill">🔒 Sees private</span>' : ''}</div></div>`).join('')}</div></div>
+  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${S.members.map(m => `<div class="locrow" ${admin ? `data-m="${esc(m.email)}" style="cursor:pointer"` : ''}><div><div class="nm">${esc(m.name || m.email)}${m.email === S.me.email ? ' <span class="muted small">(you)</span>' : ''}</div><div class="small muted">${esc(m.email)}</div></div><div class="row" style="gap:4px">${m.is_admin ? '<span class="pill">Admin</span>' : ''}${m.see_private || m.is_admin ? '<span class="pill">🔒 Sees private</span>' : ''}${m.see_cameras || m.is_admin ? '<span class="pill">📷</span>' : ''}${m.can_control || m.is_admin ? '<span class="pill">🔌</span>' : ''}</div></div>`).join('')}</div></div>
     ${admin ? '<button class="btn primary" id="addM">＋ Add a family member</button>' : ''}
     <p class="small muted">Family members sign in with the email listed here — they get a code by email, no password. Send them the app link: <b>${esc(base())}</b></p>`;
   if (!admin) return;
@@ -926,10 +1208,12 @@ function viewFamily() {
       <label class="f">Name<input id="mName" value="${esc(m?.name || '')}"></label>
       <label class="f">Email they sign in with<input id="mEmail" type="email" value="${esc(m?.email || '')}" ${m ? 'disabled' : ''} autocapitalize="none"></label>
       <label class="chk"><input type="checkbox" id="mPriv" ${m?.see_private ? 'checked' : ''}> Can see private categories</label>
+      <label class="chk"><input type="checkbox" id="mCam" ${m?.see_cameras ? 'checked' : ''}> Can see cameras</label>
+      <label class="chk"><input type="checkbox" id="mCtl" ${m?.can_control ? 'checked' : ''}> Can use switches and lights</label>
       <label class="chk"><input type="checkbox" id="mAdm" ${m?.is_admin ? 'checked' : ''} ${self ? 'disabled' : ''}> Admin (can manage family and categories)</label>
       <div class="row"><button class="btn primary grow" id="mSave">Save</button>${m && !self ? '<button class="btn danger" id="mDel">Remove</button>' : ''}</div>`);
     $('#mSave', s).onclick = async () => {
-      const row = { name: $('#mName', s).value.trim(), see_private: $('#mPriv', s).checked };
+      const row = { name: $('#mName', s).value.trim(), see_private: $('#mPriv', s).checked, see_cameras: $('#mCam', s).checked, can_control: $('#mCtl', s).checked };
       if (!self) row.is_admin = $('#mAdm', s).checked;
       if (m) { const r = await run(sb.from('members').update(row).eq('email', m.email).select().single()); Object.assign(m, r); }
       else {

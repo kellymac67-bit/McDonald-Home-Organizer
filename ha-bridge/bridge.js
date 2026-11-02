@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.1.1';
+const VERSION = '0.2.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -121,7 +121,9 @@ function scheduleCatalog(ms = 15e3) {
 }
 const pickAttrs = s => Object.fromEntries(KEEP_ATTRS.filter(k => s.attributes[k] !== undefined).map(k => [k, s.attributes[k]]));
 
+let hasPlatform = null;
 async function buildCatalog() {
+  if (hasPlatform === null) hasPlatform = !(await sb.from('ha_devices').select('platform').limit(1)).error;
   const [areas, devices, entities, states] = await Promise.all([
     haCall({ type: 'config/area_registry/list' }),
     haCall({ type: 'config/device_registry/list' }),
@@ -168,6 +170,7 @@ async function buildCatalog() {
       ha_area: areaName.get(areaId) || '',
       device_class: dc, unit: s.attributes.unit_of_measurement || '',
       on_battery: batteryDevs.has(e.device_id),
+      ...(hasPlatform ? { platform: e.platform || '' } : {}),
       state: s.state, attributes: pickAttrs(s), last_changed: s.last_changed,
     });
     defaults.set(e.entity_id, {
@@ -192,7 +195,7 @@ async function buildCatalog() {
   }
   const fresh = [...rows.values()].filter(r => !existing.has(r.entity_id)).map(r => ({ ...r, ...defaults.get(r.entity_id) }));
   const known = [...rows.values()].filter(r => existing.has(r.entity_id));
-  const gone = [...existing].filter(id => !rows.has(id));
+  const gone = [...existing].filter(id => !rows.has(id) && !MONNIT_ID.test(id));   // Monnit sensors are managed below
   for (let i = 0; i < fresh.length; i += 200) ok(await sb.from('ha_devices').insert(fresh.slice(i, i + 200)), 'Adding devices');
   for (let i = 0; i < known.length; i += 200) ok(await sb.from('ha_devices').upsert(known.slice(i, i + 200), { onConflict: 'entity_id' }), 'Updating devices');
   for (let i = 0; i < gone.length; i += 100) ok(await sb.from('ha_devices').delete().in('entity_id', gone.slice(i, i + 100)), 'Removing devices');
@@ -318,6 +321,66 @@ async function pollCommands() {
   } finally { polling = false; }
 }
 
+// ---------------------------------------------------------------- Monnit (iMonnit Online)
+// Reads every sensor from iMonnit every 5 minutes, sends it to the app, and creates a matching
+// sensor in Home Assistant (e.g. sensor.monnit_coop_temperature) so automations can use it.
+const MONNIT_ID = /^(sensor|binary_sensor)\.monnit_/;
+const useMonnit = !!(opts.monnit_api_key_id && opts.monnit_api_secret);
+const slug = t => String(t).toLowerCase().normalize('NFD').replace(/[^a-z0-9]+/g, '_').replace(/^_|_$/g, '') || 'sensor';
+const monnitDate = d => { const m = String(d || '').match(/Date\((\d+)/); return m ? new Date(+m[1]).toISOString() : null; };
+function parseMonnit(m) {
+  const reading = String(m.CurrentReading ?? '').trim();
+  const num = reading.match(/^-?\d+(\.\d+)?/);
+  let kind = 'sensor', state = reading, unit = '', dc = '';
+  if (!num && /water/i.test(reading)) {
+    kind = 'binary_sensor'; dc = 'moisture';
+    state = /not\s+present|no\s+water|dry/i.test(reading) ? 'off' : 'on';
+  } else if (num) {
+    state = num[0];
+    if (/^-?[\d.]+\s*%/.test(reading)) { unit = '%'; dc = 'humidity'; }
+    else if (/^-?[\d.]+\s*°\s*F/i.test(reading)) { unit = '°F'; dc = 'temperature'; }
+    else if (/^-?[\d.]+\s*°\s*C/i.test(reading)) { unit = '°C'; dc = 'temperature'; }
+    else unit = reading.slice(num[0].length).trim().split(/\s+/)[0] || '';
+  }
+  const last = monnitDate(m.LastCommunicationDate);
+  if (last && Date.now() - Date.parse(last) > 6 * 3600e3) state = 'unavailable';   // silent for 6 h
+  const name = m.SensorName || `Monnit ${m.SensorID}`;
+  return {
+    entity_id: `${kind}.monnit_${slug(name)}`, kind, name, device_name: 'Monnit', ha_area: '',
+    device_class: dc, unit, on_battery: true, ...(hasPlatform ? { platform: 'monnit' } : {}),
+    state, last_changed: last,
+    attributes: { reading, battery_level: m.BatteryLevel, signal: m.SignalStrength, monnit_id: m.SensorID,
+      ...(unit ? { unit_of_measurement: unit } : {}), ...(dc ? { device_class: dc } : {}), friendly_name: name },
+  };
+}
+let monnitCount = -1;
+async function monnitRound() {
+  if (!useMonnit) return;
+  const r = await fetch(process.env.MONNIT_URL || 'https://www.imonnit.com/json/SensorList', {
+    method: 'POST', headers: { APIKeyID: opts.monnit_api_key_id, APISecretKey: opts.monnit_api_secret },
+    signal: AbortSignal.timeout(30e3) });
+  if (!r.ok) throw new Error(`iMonnit answered ${r.status}`);
+  const j = await r.json();
+  if (!Array.isArray(j.Result)) throw new Error('iMonnit: ' + (typeof j.Result === 'string' ? j.Result : 'unexpected answer — check the API keys'));
+  const rows = j.Result.map(parseMonnit);
+  if (hasPlatform === null) hasPlatform = !(await sb.from('ha_devices').select('platform').limit(1)).error;
+  ok(await sb.from('ha_devices').upsert(rows, { onConflict: 'entity_id' }), 'Sending Monnit sensors');
+  const ex = await sb.from('ha_devices').select('entity_id');
+  if (ok(ex, 'Reading Monnit list')) {
+    const keep = new Set(rows.map(x => x.entity_id));
+    const gone = ex.data.map(x => x.entity_id).filter(id => MONNIT_ID.test(id) && !keep.has(id));
+    if (gone.length) ok(await sb.from('ha_devices').delete().in('entity_id', gone), 'Removing old Monnit sensors');
+  }
+  for (const x of rows) {                      // mirror into Home Assistant for automations
+    try {
+      await fetch(`${HA_API}/states/${x.entity_id}`, { method: 'POST', signal: AbortSignal.timeout(10e3),
+        headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state: x.state, attributes: { ...x.attributes, source: 'Monnit via McDonald Home Bridge' } }) });
+    } catch (e) { log('Could not update', x.entity_id, 'in Home Assistant:', e.message); }
+  }
+  if (rows.length !== monnitCount) { monnitCount = rows.length; log(`Monnit: ${rows.length} sensors — ${rows.map(x => `${x.name} ${x.state}${x.unit}`).join(', ')}`); }
+}
+
 // ---------------------------------------------------------------- Housekeeping
 async function heartbeat() {
   ok(await sb.from('ha_bridge_status').upsert({
@@ -349,4 +412,6 @@ every(60e3, loadSettings);
 every(60e3, snapshotRound);
 every(3600e3, cleanup);
 every(3600e3, async () => { if (haReady) await buildCatalog(); });
+if (useMonnit) { monnitRound().catch(e => log('Monnit:', e.message)); every(5 * 60e3, monnitRound); }
+else log('Monnit not set up (add the iMonnit API key ID and secret on the Configuration tab to turn it on)');
 heartbeat().catch(() => {});

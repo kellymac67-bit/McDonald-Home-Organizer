@@ -1,5 +1,5 @@
 name: McDonald Home Bridge
-version: "0.1.1"
+version: "0.2.0"
 slug: mcdonald_home_bridge
 description: Sends cameras, switches and sensors to the McDonald Home Organizer app, and carries out its commands. Nothing is opened to the internet.
 url: https://github.com/kellymac67-bit/mcdonald-home-organizer
@@ -17,6 +17,8 @@ options:
   bridge_password: ""
   motion_snapshots: true
   keep_snapshot_days: 2
+  monnit_api_key_id: ""
+  monnit_api_secret: ""
 schema:
   supabase_url: url
   supabase_key: str
@@ -24,3 +26,5 @@ schema:
   bridge_password: password
   motion_snapshots: bool
   keep_snapshot_days: int(1,14)
+  monnit_api_key_id: str?
+  monnit_api_secret: password?

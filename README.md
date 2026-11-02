@@ -28,12 +28,13 @@ In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`
 **Authentication → URL Configuration**: set **Site URL** to the Netlify address and add `https://<your-site>.netlify.app/**` under **Redirect URLs**.
 
 ### 6. Home Assistant bridge (cameras, switches, sensors)
-1. Supabase → SQL Editor → run `supabase/004_home_devices.sql`.
+1. Supabase → SQL Editor → run `supabase/004_home_devices.sql`, then `supabase/005_device_areas.sql` (adds HA-area linking, the Chicken Coop building, and Basement / Garage / Man Cave rooms under House).
 2. Supabase → **Authentication → Users → Add user → Create new user**: email `ha-bridge@mcdonald-home.app`, a long random password, tick **Auto Confirm User**. This account can't see any boxes; it can only send device info and pick up commands.
 3. Home Assistant → **Settings → Add-ons → Add-on Store** → ⋮ → **Repositories** → add `https://github.com/kellymac67-bit/mcdonald-home-organizer` → install **McDonald Home Bridge**.
 4. Add-on **Configuration** tab → paste the bridge password into `bridge_password` → Save → **Info** tab → turn on *Start on boot* and *Watchdog* → **Start**. The **Log** tab should show *Signed in*, *Connected to Home Assistant* and a device count.
-5. Only devices with an **Area** in Home Assistant appear. An area named like a building or room in the app (Barn, Shop, Garage…) is linked to it automatically.
-6. Admins can see cameras and use switches. Other family members need *See cameras* / *Use switches* turned on.
+5. **Monnit:** iMonnit Online → **API → API Keys → Generate Key** (name it *Home Bridge*; the secret is shown only once). Paste the Key ID and Secret into `monnit_api_key_id` / `monnit_api_secret` on the add-on's Configuration tab and restart it. Sensors appear in the app within a minute and in Home Assistant as `sensor.monnit_…` (for automations). Place them under **More → Home devices** (tap a sensor → Building or room).
+6. Only devices with an **Area** in Home Assistant appear. An area named like a building or room in the app (Barn, Shop, Garage…) is linked to it automatically.
+7. Admins can see cameras and use switches. Other family members need *See cameras* / *Use switches* turned on.
 
 ### 7. First sign-in
 Open the site → **First time here? Create your password** with your email → tap the link in the confirmation email → sign in. Then **More → Family members** to add the family; each person creates their own password the same way.
@@ -47,6 +48,8 @@ Open the site → **First time here? Create your password** with your email → 
 - **Pre-printed labels:** scanning a code that isn't set up yet offers to create that box.
 - **Categories:** main category › sub-category (Decorations › Halloween). Boxes go in a sub-category, or in a main category that has no subs; the box number uses that prefix (HALL-03). On Search, tap a main category chip and a second row of sub-category chips appears. Admin: More → Categories → *＋ Main category* / *＋ Sub-category*.
 - **Private category:** "Secure storage" (STOR), and any sub-category under it, is hidden from family members unless they're allowed to see private categories (More → Family members).
+- **Home tab:** every camera, switch and sensor grouped by building, with a *House connected* light. Tap a switch to flip it (takes a couple of seconds); tap a camera for its latest picture, *Take a new picture*, recent motion pictures and *Live in Ring*. Building pages show their own devices too.
+- **Home devices (admin, under More):** link each Home Assistant area to a building or room, hide clutter, rename devices, and set how often each camera takes a picture.
 - **Backup:** More → Download everything (spreadsheet).
 
 ## Notes
@@ -59,7 +62,7 @@ Open the site → **First time here? Create your password** with your email → 
 |---|---|
 | `index.html`, `app.css`, `js/app.js` | The app |
 | `js/config.js` | Supabase address and key |
-| `supabase/001_setup.sql` … `004_home_devices.sql` | Database setup — run all, in order, in Supabase |
+| `supabase/001_setup.sql` … `005_device_areas.sql` | Database setup — run all, in order, in Supabase |
 | `repository.yaml`, `ha-bridge/` | Home Assistant add-on that connects the house to the app (see `ha-bridge/DOCS.md`) |
 | `manifest.json`, `sw.js`, `icons/` | Home-screen app support |
 | `netlify.toml` | Hosting settings (every page address opens the app) |
