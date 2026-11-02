@@ -1,5 +1,5 @@
 // Keeps the app shell available so the home-screen app opens fast. Data always comes live from Supabase.
-const CACHE = 'organizer-v1';
+const CACHE = 'organizer-v2';
 const SHELL = ['/', '/index.html', '/app.css', '/js/app.js', '/js/config.js', '/manifest.json', '/icons/icon-192.png'];
 
 self.addEventListener('install', e => {
@@ -13,10 +13,10 @@ self.addEventListener('fetch', e => {
   if (e.request.method !== 'GET' || url.origin !== location.origin) return;
   // Pages (/, /b/XMAS-07, /loc/GAR-A1 …) all serve the app; try network first so updates arrive.
   if (e.request.mode === 'navigate') {
-    e.respondWith(fetch(e.request).catch(() => caches.match('/index.html')));
+    e.respondWith(fetch(e.request, { cache: 'no-cache' }).catch(() => caches.match('/index.html')));
     return;
   }
-  e.respondWith(fetch(e.request).then(res => {
+  e.respondWith(fetch(e.request, { cache: 'no-cache' }).then(res => {
     const copy = res.clone(); caches.open(CACHE).then(c => c.put(e.request, copy)); return res;
   }).catch(() => caches.match(e.request)));
 });
