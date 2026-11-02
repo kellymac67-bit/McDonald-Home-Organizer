@@ -238,6 +238,16 @@ grant select on public.moves to authenticated;
 revoke all on public.members, public.categories, public.locations, public.boxes,
   public.items, public.photos, public.moves from anon;
 
+-- The very first person to sign in (when the family list is empty) becomes the admin.
+create or replace function public.claim_first_admin() returns boolean
+language plpgsql security definer set search_path = public as $$
+begin
+  if exists (select 1 from members) or public.my_email() = '' then return false; end if;
+  insert into members(email, name, is_admin, see_private) values (public.my_email(), '', true, true);
+  return true;
+end $$;
+grant execute on function public.claim_first_admin() to authenticated;
+
 grant execute on function public.next_code(text) to authenticated;
 grant execute on function public.is_member() to authenticated;
 
@@ -261,12 +271,8 @@ create policy "family delete photos" on storage.objects for delete to authentica
   using (bucket_id = 'photos' and public.is_member());
 
 -- ============================================================
--- 5. Starting data — change the email below if needed
+-- 5. Starting data (the first person to sign in becomes the admin — see claim_first_admin)
 -- ============================================================
-
-insert into public.members (email, name, is_admin, see_private)
-values ('kellymac67@gmail.com', 'Kelly', true, true)
-on conflict (email) do nothing;
 
 insert into public.categories (name, prefix, color, is_private, sort) values
   ('Christmas decorations', 'XMAS', '#c0392b', false, 1),

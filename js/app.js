@@ -853,6 +853,10 @@ async function start(session) {
   $('#top').hidden = false;
   try { await loadAll(); } catch (e) { view().innerHTML = `<div class="card">Couldn't load your data: ${esc(e.message)}<button class="btn" onclick="location.reload()">Try again</button></div>`; return; }
   if (!S.me) {
+    const { data: claimed } = await sb.rpc('claim_first_admin');
+    if (claimed) { await loadAll(); toast('Welcome! You are the admin.'); return render(); }
+  }
+  if (!S.me) {
     header('Home Organizer'); $('#tabs').hidden = true;
     view().innerHTML = `<div class="card center"><h2 style="justify-content:center">Not on the family list</h2><p class="muted" style="margin:0">${esc(S.email)} hasn't been added yet. Ask whoever runs the app to add you under More → Family members.</p><button class="btn" id="out">Sign out</button></div>`;
     $('#out').onclick = async () => { await sb.auth.signOut(); location.href = '/'; };

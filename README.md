@@ -9,7 +9,7 @@ Web app for finding things in storage boxes at home. Every box and shelf gets a 
 ### 1. Supabase — database
 1. Supabase → **SQL Editor** → **New query**.
 2. Paste the whole of `supabase/001_setup.sql` → **Run**. A "destructive operations" warning is normal; the file is safe to run again.
-3. It creates the tables, the access rules, a private `photos` storage bucket, starting categories, and adds kellymac67@gmail.com as admin.
+3. It creates the tables, the access rules, a private `photos` storage bucket, and starting categories. The first person to sign in becomes the admin.
 
 ### 2. Supabase — sign-in
 Nothing to change. Sign-in is email + password. The first time, each person taps **First time here? Create your password**, then taps the link in Supabase's standard confirmation email once. **Forgot password?** emails a reset link.
@@ -26,7 +26,7 @@ In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`
 **Authentication → URL Configuration**: set **Site URL** to the Netlify address and add `https://<your-site>.netlify.app/**` under **Redirect URLs**.
 
 ### 6. First sign-in
-Open the site → **First time here? Create your password** with kellymac67@gmail.com → tap the link in the confirmation email → sign in. Then **More → Family members** to add the family; each person creates their own password the same way.
+Open the site → **First time here? Create your password** with your email → tap the link in the confirmation email → sign in. Then **More → Family members** to add the family; each person creates their own password the same way.
 
 ## Day to day
 - **New box:** New box tab → pick category → number fills in (XMAS-07) → name and place → Create → add photos and contents ("Add a list" takes one item per line, `3 extension cords` or `ornaments x 24`).
