@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.2.0';
+const VERSION = '0.2.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -340,11 +340,11 @@ function parseMonnit(m) {
     if (/^-?[\d.]+\s*%/.test(reading)) { unit = '%'; dc = 'humidity'; }
     else if (/^-?[\d.]+\s*°\s*F/i.test(reading)) { unit = '°F'; dc = 'temperature'; }
     else if (/^-?[\d.]+\s*°\s*C/i.test(reading)) { unit = '°C'; dc = 'temperature'; }
-    else unit = reading.slice(num[0].length).trim().split(/\s+/)[0] || '';
+    else unit = reading.slice(num[0].length).trim().split(/[\s,]+/)[0] || '';
   }
   const last = monnitDate(m.LastCommunicationDate);
   if (last && Date.now() - Date.parse(last) > 6 * 3600e3) state = 'unavailable';   // silent for 6 h
-  const name = m.SensorName || `Monnit ${m.SensorID}`;
+  const name = String(m.SensorName || `Monnit ${m.SensorID}`).replace(new RegExp(`\\s*[-–]\\s*${m.SensorID}\\s*$`), '').trim();
   return {
     entity_id: `${kind}.monnit_${slug(name)}`, kind, name, device_name: 'Monnit', ha_area: '',
     device_class: dc, unit, on_battery: true, ...(hasPlatform ? { platform: 'monnit' } : {}),
