@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.1.1';
+const VERSION = '2.1.2';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -615,7 +615,7 @@ function groupByPlace(list) {
 
 // ---- each person's Home settings ----
 const SECTIONS = [['doors', 'Doors'], ['scenes', 'Scenes'], ['glance', 'At a glance & weather'], ['cameras', 'Cameras'], ['boxes', 'Recent boxes']];
-const GLANCE_MAX = 7;
+const GLANCE_MAX = 8;
 const weatherDevices = () => shownDevices().filter(d => d.platform === 'ambient_station' && ['sensor', 'binary_sensor'].includes(d.kind));
 function outdoorTemp() {
   const w = weatherDevices().filter(d => d.device_class === 'temperature');
