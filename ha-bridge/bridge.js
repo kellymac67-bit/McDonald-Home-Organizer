@@ -7,9 +7,12 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.1.0';
+const VERSION = '0.1.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
-const TOKEN = process.env.SUPERVISOR_TOKEN;
+// The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
+const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
+const TOKEN = process.env.SUPERVISOR_TOKEN || readFile('/run/s6/container_environment/SUPERVISOR_TOKEN')
+  || readFile('/var/run/s6/container_environment/SUPERVISOR_TOKEN') || process.env.HASSIO_TOKEN || '';
 const HA_WS = process.env.HA_WS_URL || 'ws://supervisor/core/websocket';
 const HA_API = process.env.HA_API_URL || 'http://supervisor/core/api';
 
@@ -336,6 +339,7 @@ const every = (ms, fn) => setInterval(() => fn().catch(e => log(e.message)), ms)
 
 // ---------------------------------------------------------------- Start
 log(`McDonald Home Bridge ${VERSION} starting`);
+if (!TOKEN) log('No Home Assistant token found — check that the add-on has Home Assistant API access.');
 await signIn();
 await startHa();
 every(2e3, pollCommands);
