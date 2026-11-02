@@ -158,6 +158,8 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .camtile .ph{display:grid;place-items:center;height:100%;font-size:12px;color:#bbb;padding:8px 8px 24px;text-align:center}
 .camtile .mot{position:absolute;top:6px;left:6px;background:var(--accent);color:#000;font-size:11px;font-weight:800;padding:2px 7px;border-radius:999px}
 .camview img{width:100%;border-radius:10px;background:#000}
+.camview video{width:100%;border-radius:10px;background:#000;aspect-ratio:16/9;display:block}
+#liveState{color:var(--brand,#0076B6);font-weight:600}
 .camph{aspect-ratio:16/9;border-radius:10px;background:#111;color:#bbb;display:grid;place-items:center}
 .hstatus{display:flex;align-items:center;gap:8px;font-weight:600;font-size:14px;flex-wrap:wrap}
 .sdot{width:10px;height:10px;border-radius:50%;background:var(--ok);flex:none}

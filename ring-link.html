@@ -1,0 +1,18 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Connect Ring</title>
+<meta name="robots" content="noindex">
+</head><body style="font-family:system-ui,sans-serif;padding:24px">
+<p>Connecting Ring to McDonald Home…</p>
+<script>
+  // Ring sends the admin here after they allow "McDonald Home Cameras" in the Ring app.
+  // Keep the one-time link details, then open the app (it asks them to sign in if needed) to finish.
+  (function () {
+    var q = new URLSearchParams(location.search);
+    if (q.get("nonce") && q.get("time")) {
+      try { sessionStorage.setItem("ringLink", JSON.stringify({ nonce: q.get("nonce"), time: q.get("time") })); } catch (e) { }
+      location.replace("/devices#ring-link=" + encodeURIComponent(q.get("nonce")) + "&time=" + encodeURIComponent(q.get("time")));
+    } else location.replace("/");
+  })();
+</script>
+</body></html>

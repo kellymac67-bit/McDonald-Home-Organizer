@@ -72,3 +72,13 @@ Open the site → **First time here? Create your password** with your email → 
 | `repository.yaml`, `ha-bridge/` | Home Assistant add-on that connects the house to the app (see `ha-bridge/DOCS.md`) |
 | `manifest.json`, `sw.js`, `icons/` | Home-screen app support |
 | `netlify.toml` | Hosting settings (every page address opens the app) |
+
+## Ring live view
+Live video for the home Ring cameras goes through the Supabase Edge Function `ring` (supabase/functions/ring/index.ts). The function only lets through cameras that also appear in the app from Home Assistant, so the Salem Center cameras on the same Ring account can't be opened.
+1. In the Ring developer console, create a private app called "McDonald Home Cameras" with Cameras and Doorbells turned on. Put its keys in Supabase under Edge Functions → Secrets as `RING_CLIENT_ID`, `RING_CLIENT_SECRET` and `RING_HMAC_KEY`.
+2. Run `supabase/009_ring.sql`. Then deploy the function under the name `ring` and turn **Verify JWT** off.
+3. Give Ring these addresses:
+   - Token Exchange: `https://linamgjcynivkfkvghhk.supabase.co/functions/v1/ring/token`
+   - Webhook: `…/functions/v1/ring/webhook`
+   - Account Link: `https://mcdonald-home-organizer.netlify.app/ring-link.html`
+4. Allow the app from the Ring app. More → Home devices → Ring live view should then show the connected cameras, and each Ring camera gets a ▶ Live button.

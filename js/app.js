@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.1.3';
+const VERSION = '2.2.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -194,7 +194,7 @@ function sheet(html) {
   document.body.appendChild(o);
   return o.firstElementChild;
 }
-function closeSheet() { $('#sheet')?.remove(); $('#viewer')?.remove(); }
+function closeSheet() { stopLive(); $('#sheet')?.remove(); $('#viewer')?.remove(); }
 
 // ---------- shared bits ----------
 const topCats = () => ix.catKids.get('') || [];
@@ -478,10 +478,10 @@ function openImage(path, caption) {
 }
 async function openCamera(d, redraw) {
   if (!d) return;
-  const live = d.platform === 'ring' ? '<a class="btn" href="https://account.ring.com/account/dashboard" target="_blank" rel="noopener">Live in Ring</a>' : '';
+  const live = d.platform === 'ring' ? '<button class="btn" id="camLive">▶ Live</button>' : '';
   const s = sheet(`<h3>${esc(devName(d))}</h3>
     <div class="camview" id="camImg"></div>
-    <div class="small muted" id="camMeta"></div>
+    <div class="small muted" id="camMeta"></div><div class="small" id="liveState" hidden></div>
     <div class="row"><button class="btn primary grow" id="camRef">Take a new picture</button>${live}</div>
     ${d.on_battery ? '<div class="small muted">Battery camera — pictures are taken on motion or when you ask, to save its battery.</div>' : ''}
     <div class="lab">Recent motion</div><div class="photos" id="camHist"><p class="muted small">Loading…</p></div>`);
@@ -492,6 +492,8 @@ async function openCamera(d, redraw) {
     hydrate(s);
   };
   draw();
+  const lb = $('#camLive', s);
+  if (lb) lb.onclick = () => live_ && live_.entity === d.entity_id ? (stopLive(), lb.textContent = '▶ Live', draw()) : startLive(d, s, draw);
   $('#camRef', s).onclick = async () => {
     const b = $('#camRef', s); b.disabled = true; b.textContent = 'Asking the camera…';
     const ok = await sendCommand(d, 'snapshot');
@@ -505,6 +507,97 @@ async function openCamera(d, redraw) {
     || '<p class="muted small" style="grid-column:1/-1">No motion pictures in the last few days.</p>';
   $$('[data-snap]', h).forEach(b => b.onclick = () => { const p = data[+b.dataset.snap]; openImage(p.path, `${devName(d)} · ${new Date(p.taken_at).toLocaleString()}`); });
   hydrate(h);
+}
+// ---------- Ring live view (server function "ring"; keys and tokens never reach the app) ----------
+const RING_FN = SUPABASE_URL + '/functions/v1/ring';
+let live_ = null;
+async function callRing(body) {
+  const { data: { session } } = await sb.auth.getSession();
+  if (!session) throw new Error('Sign in again');
+  const r = await fetch(RING_FN, { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Bearer ' + session.access_token, apikey: SUPABASE_KEY }, body: JSON.stringify(body) });
+  const j = await r.json().catch(() => ({}));
+  if (!r.ok) { const e = new Error(j.error || j.message || `error ${r.status}`); e.status = r.status; throw e; }
+  return j;
+}
+const ringKey = t => String(t || '').trim().toLowerCase().replace(/\s+(live view|live|snapshot|camera)$/, '').trim();
+async function ringDeviceFor(d) {
+  if (!S.ringDevs || Date.now() - S.ringDevs.at > 10 * 60000) {
+    const r = await callRing({ action: 'devices' });
+    S.ringDevs = { at: Date.now(), list: r.devices || [], errors: r.errors || [] };
+  }
+  const keys = [d.device_name, d.name, devName(d)].map(ringKey).filter(Boolean);
+  return S.ringDevs.list.find(x => keys.includes(ringKey(x.name)));
+}
+function setLive(t) { const el = $('#liveState'); if (el) { el.hidden = !t; el.textContent = t; } }
+async function startLive(d, s, redraw) {
+  stopLive();
+  if (!('RTCPeerConnection' in window)) return toast("This browser can't show live video", 4000);
+  const lb = $('#camLive', s); if (lb) lb.textContent = '■ Stop';
+  const box = $('#camImg', s);
+  box.innerHTML = '<video id="liveVid" autoplay playsinline muted></video>';
+  setLive('Connecting to the camera…');
+  const pc = new RTCPeerConnection({ iceServers: [{ urls: 'stun:stun.l.google.com:19302' }] });
+  const mine = live_ = { entity: d.entity_id, pc, id: '', session: '', timer: setTimeout(() => { if (live_ === mine) { stopLive(); if (lb) lb.textContent = '▶ Live'; redraw?.(); toast('Live view stopped after 5 minutes'); } }, 5 * 60000) };
+  const fail = msg => { if (live_ !== mine) return; stopLive(); if (lb) lb.textContent = '▶ Live'; redraw?.(); setLive(msg); };
+  try {
+    const rd = await ringDeviceFor(d);
+    if (live_ !== mine) return;
+    if (!rd) return fail("Couldn't find this camera on the Ring connection. An admin can check More → Home devices → Ring live view.");
+    mine.id = rd.id;
+    pc.addTransceiver('video', { direction: 'recvonly' });
+    pc.ontrack = ev => {
+      if (live_ !== mine || ev.track.kind !== 'video') return;
+      const v = $('#liveVid'); if (v) v.srcObject = ev.streams[0] || new MediaStream([ev.track]);
+      setLive('● Live');
+    };
+    pc.onconnectionstatechange = () => { if (live_ === mine && ['failed', 'disconnected'].includes(pc.connectionState)) fail('The live connection dropped. Tap Live to try again.'); };
+    await pc.setLocalDescription(await pc.createOffer());
+    await new Promise(res => { if (pc.iceGatheringState === 'complete') return res(); const t = setTimeout(res, 2500); pc.addEventListener('icegatheringstatechange', () => { if (pc.iceGatheringState === 'complete') { clearTimeout(t); res(); } }); });
+    const r = await callRing({ action: 'whep', device_id: rd.id, sdp: pc.localDescription.sdp });
+    if (live_ !== mine) { callRing({ action: 'whep_stop', device_id: rd.id, session: r.session }).catch(() => {}); return; }
+    mine.session = r.session;
+    await pc.setRemoteDescription({ type: 'answer', sdp: r.answer });
+    setLive('Starting video…');
+  } catch (e) { console.error(e); fail(`Live view didn't start: ${e.message}`); }
+}
+function stopLive() {
+  if (!live_) return; const l = live_; live_ = null; clearTimeout(l.timer);
+  try { l.pc.close(); } catch {}
+  if (l.session) callRing({ action: 'whep_stop', device_id: l.id, session: l.session }).catch(() => {});
+}
+// Ring sends the admin back to /ring-link.html after they allow the app; that page hands the one-time details over here.
+async function handleRingLink() {
+  const m = location.hash.match(/ring-link=([^&]+)&time=(\d+)/);
+  let p = m ? { nonce: decodeURIComponent(m[1]), time: m[2] } : null;
+  if (!p) try { p = JSON.parse(sessionStorage.getItem('ringLink') || 'null'); } catch {}
+  if (!p) return;
+  const clear = () => { try { sessionStorage.removeItem('ringLink'); } catch {} if (location.hash) history.replaceState(history.state, '', location.pathname + location.search); };
+  if (!S.me?.is_admin) { clear(); return toast('Only an admin can connect Ring', 4000); }
+  toast('Finishing the Ring connection…', 20000);
+  for (let i = 0; i < 6; i++) {
+    try { await callRing({ action: 'link', nonce: p.nonce, time: p.time }); clear(); S.ringDevs = null; toast('Ring is connected'); if (location.pathname === '/devices') render(); return; }
+    catch (e) { if (e.status !== 409 || i === 5) { clear(); return toast(`Ring connection didn't finish: ${e.message}`, 6000); } await new Promise(r => setTimeout(r, 3000)); }
+  }
+}
+async function ringCard(el) {
+  el.innerHTML = '<h2>Ring live view</h2><p class="small muted" style="margin:0">Checking…</p>';
+  let st;
+  try { st = await callRing({ action: 'status' }); }
+  catch (e) { el.innerHTML = `<h2>Ring live view</h2><p class="small muted" style="margin:0">${e.status === 404 ? 'The "ring" server function isn\'t deployed yet.' : esc(e.message)}</p>`; return; }
+  let body;
+  if (!st.configured) body = '<p class="small muted" style="margin:0">The Ring app keys haven\'t been added to Supabase yet (RING_CLIENT_ID, RING_CLIENT_SECRET, RING_HMAC_KEY).</p>';
+  else if (!st.linked && st.waiting) body = '<p class="small muted" style="margin:0">Ring approved the connection. Tap below to finish.</p><button class="btn primary" id="ringClaim">Finish connecting Ring</button>';
+  else if (!st.linked) body = '<p class="small muted" style="margin:0">Not connected yet. In the Ring app on your phone, open Control Center → Authorized Client Services (or the developer console\'s test link) and allow <b>McDonald Home Cameras</b>. Ring brings you back here and it finishes on its own.</p>';
+  else {
+    let list = '';
+    try { const r = await callRing({ action: 'devices' }); S.ringDevs = { at: Date.now(), list: r.devices || [], errors: r.errors || [] };
+      list = S.ringDevs.list.map(x => `<div class="small">${x.online === false ? '⚪' : '🟢'} ${esc(x.name)}</div>`).join('') || '<div class="small muted">No home cameras matched. Ring camera names must match the camera names in Home Assistant.</div>';
+    } catch (e) { list = `<div class="small muted">${esc(e.message)}</div>`; }
+    body = `<p class="small muted" style="margin:0 0 6px">Connected. Live view works on these cameras (Salem Center cameras are always left out):</p>${list}`;
+  }
+  el.innerHTML = `<h2>Ring live view</h2>${body}`;
+  const c = $('#ringClaim', el);
+  if (c) c.onclick = async () => { c.disabled = true; try { await callRing({ action: 'claim' }); toast('Ring is connected'); S.ringDevs = null; ringCard(el); } catch (e) { c.disabled = false; toast(e.message, 5000); } };
 }
 function statusLine() {
   if (!S.bridge) return '<div class="hstatus bad"><span class="sdot"></span>The house hasn\'t connected yet</div>';
@@ -529,6 +622,7 @@ function viewDeviceAdmin(params) {
   let q = '', showHidden = params.get('hidden') === '1';
   view().innerHTML = `<div class="card">${statusLine()}
       ${S.bridge ? `<div class="small muted">Bridge ${esc(S.bridge.version)} · Home Assistant ${esc(S.bridge.ha_version)} · ${esc(S.bridge.message)}</div>` : ''}</div>
+    <div class="card" id="ringCard" style="padding:10px 14px"></div>
     <div class="card" style="padding:10px 14px 4px"><h2>Home Assistant areas</h2>
       <p class="small muted" style="margin:0">Link each area to a building or room. Everything in that area — now and later — shows on that page.</p>
       <div class="list" id="areas"></div></div>
@@ -537,6 +631,7 @@ function viewDeviceAdmin(params) {
       <label class="chk"><input type="checkbox" id="dHidden" ${showHidden ? 'checked' : ''}> Include hidden devices</label>
       <div class="list" id="dlist"></div></div>
     <p class="small muted">Only devices that have an Area in Home Assistant are sent to the app. To add or remove one entirely, set or clear its Area in Home Assistant.</p>`;
+  ringCard($('#ringCard'));
   const placeOpts = sel => `<option value="">— Not linked —</option>${locOptions(sel || '', null, ['building', 'room'])}`;
   const draw = () => {
     if (!$('#dlist')) return;
@@ -1714,6 +1809,7 @@ async function start(session) {
     return;
   }
   render();
+  handleRingLink();
 }
 async function boot() {
   if (!configured) {
