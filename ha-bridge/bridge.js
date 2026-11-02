@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.2.2';
+const VERSION = '0.2.3';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -137,7 +137,10 @@ async function buildCatalog() {
   const batteryDevs = new Set(), cameraDevs = new Set();
   for (const e of entities) {
     const s = stateOf.get(e.entity_id); if (!e.device_id || !s) continue;
-    if (e.entity_id.startsWith('sensor.') && s.attributes.device_class === 'battery') batteryDevs.add(e.device_id);
+    // a real battery camera reports a numeric battery level and isn't a plug-in model
+    const model = devById.get(e.device_id)?.model || '';
+    if (e.entity_id.startsWith('sensor.') && s.attributes.device_class === 'battery' && !isNaN(parseFloat(s.state))
+        && !/floodlight|indoor|pan-tilt|wired|elite|\bpro\b/i.test(model)) batteryDevs.add(e.device_id);
     if (e.entity_id.startsWith('camera.') && !e.disabled_by) cameraDevs.add(e.device_id);
   }
 
@@ -203,6 +206,11 @@ async function buildCatalog() {
 
   catalog = rows; deviceOf = dOf; camerasOf = cOf; motionOf = mOf;
   await loadSettings();
+  // plug-in cameras that were set to "motion only" before 0.2.3 and never had a picture → every 15 min
+  const fix = [...rows.values()].filter(r => r.kind === 'camera' && !r.on_battery && !r.snapshot_at && settings.get(r.entity_id)?.snapshot_minutes === 0).map(r => r.entity_id);
+  if (fix.length && ok(await sb.from('ha_devices').update({ snapshot_minutes: 15 }).in('entity_id', fix), 'Setting camera schedule')) {
+    log(`Plug-in cameras set to a picture every 15 minutes: ${fix.length}`); await loadSettings();
+  }
   const n = k => [...rows.values()].filter(r => r.kind === k).length;
   log(`Device list: ${rows.size} items (${n('camera')} cameras, ${n('switch') + n('light')} switches/lights, ` +
       `${n('sensor') + n('binary_sensor')} sensors). Added ${fresh.length}, removed ${gone.length}.`);
@@ -281,12 +289,19 @@ async function takeSnapshot(entityId, reason) {
   } finally { busy.delete(entityId); }
 }
 
+const firstTried = new Set();
 async function snapshotRound() {
   if (!haReady) return;
   for (const row of catalog.values()) {
     if (row.kind !== 'camera') continue;
     const s = settings.get(row.entity_id);
-    if (!s?.enabled || !s.snapshot_minutes) continue;
+    if (!s?.enabled) continue;
+    if (!s.snapshot_minutes) {                 // motion-only cameras still get one starting picture
+      if (row.snapshot_at || firstTried.has(row.entity_id)) continue;
+      firstTried.add(row.entity_id);
+      try { await takeSnapshot(row.entity_id, 'interval'); } catch (e) { log('Snapshot', row.entity_id, 'failed:', e.message); }
+      continue;
+    }
     const age = row.snapshot_at ? Date.now() - Date.parse(row.snapshot_at) : Infinity;
     if (age < s.snapshot_minutes * 60e3) continue;
     try { await takeSnapshot(row.entity_id, 'interval'); }
