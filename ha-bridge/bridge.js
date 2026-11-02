@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.2.3';
+const VERSION = '0.2.4';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -156,7 +156,9 @@ async function buildCatalog() {
 
     // motion triggers (Ring motion/ding events, camera motion sensors) — used for snapshots
     if (e.device_id && cameraDevs.has(e.device_id) &&
-        ((domain === 'event' && ['motion', 'doorbell'].includes(dc)) || (domain === 'binary_sensor' && dc === 'motion')))
+        ((domain === 'event' && ['motion', 'doorbell'].includes(dc)) || (domain === 'binary_sensor' && dc === 'motion')
+         // Ring "Last activity" is polled, so it still works when Ring's instant push is broken
+         || (domain === 'sensor' && dc === 'timestamp' && /_last_activity$/.test(e.entity_id))))
       mOf.set(e.entity_id, e.device_id);
 
     if (e.entity_category) continue;              // skip settings / diagnostics
@@ -229,7 +231,7 @@ function onHaEvent(ev) {
   if (!new_state) return;
 
   if (motionOf.has(entity_id)) {
-    const isEvent = entity_id.startsWith('event.');
+    const isEvent = entity_id.startsWith('event.') || entity_id.startsWith('sensor.');
     const fired = isEvent
       ? old_state && !['unavailable', 'unknown'].includes(old_state.state) && new_state.state !== old_state.state && new_state.state !== 'unavailable'
       : new_state.state === 'on' && old_state?.state === 'off';
