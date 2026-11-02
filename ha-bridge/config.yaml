@@ -1,0 +1,26 @@
+name: McDonald Home Bridge
+version: "0.1.0"
+slug: mcdonald_home_bridge
+description: Sends cameras, switches and sensors to the McDonald Home Organizer app, and carries out its commands. Nothing is opened to the internet.
+url: https://github.com/kellymac67-bit/mcdonald-home-organizer
+arch:
+  - aarch64
+  - amd64
+startup: application
+boot: auto
+init: false
+homeassistant_api: true
+options:
+  supabase_url: "https://linamgjcynivkfkvghhk.supabase.co"
+  supabase_key: "sb_publishable_3Ujo6A0_MAWf3AbzepqtfQ_H3LvG1O6"
+  bridge_email: "ha-bridge@mcdonald-home.app"
+  bridge_password: ""
+  motion_snapshots: true
+  keep_snapshot_days: 2
+schema:
+  supabase_url: url
+  supabase_key: str
+  bridge_email: email
+  bridge_password: password
+  motion_snapshots: bool
+  keep_snapshot_days: int(1,14)

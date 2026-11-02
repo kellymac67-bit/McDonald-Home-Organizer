@@ -27,7 +27,15 @@ In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`
 ### 5. Supabase — allow the site address
 **Authentication → URL Configuration**: set **Site URL** to the Netlify address and add `https://<your-site>.netlify.app/**` under **Redirect URLs**.
 
-### 6. First sign-in
+### 6. Home Assistant bridge (cameras, switches, sensors)
+1. Supabase → SQL Editor → run `supabase/004_home_devices.sql`.
+2. Supabase → **Authentication → Users → Add user → Create new user**: email `ha-bridge@mcdonald-home.app`, a long random password, tick **Auto Confirm User**. This account can't see any boxes; it can only send device info and pick up commands.
+3. Home Assistant → **Settings → Add-ons → Add-on Store** → ⋮ → **Repositories** → add `https://github.com/kellymac67-bit/mcdonald-home-organizer` → install **McDonald Home Bridge**.
+4. Add-on **Configuration** tab → paste the bridge password into `bridge_password` → Save → **Info** tab → turn on *Start on boot* and *Watchdog* → **Start**. The **Log** tab should show *Signed in*, *Connected to Home Assistant* and a device count.
+5. Only devices with an **Area** in Home Assistant appear. An area named like a building or room in the app (Barn, Shop, Garage…) is linked to it automatically.
+6. Admins can see cameras and use switches. Other family members need *See cameras* / *Use switches* turned on.
+
+### 7. First sign-in
 Open the site → **First time here? Create your password** with your email → tap the link in the confirmation email → sign in. Then **More → Family members** to add the family; each person creates their own password the same way.
 
 ## Day to day
@@ -51,6 +59,7 @@ Open the site → **First time here? Create your password** with your email → 
 |---|---|
 | `index.html`, `app.css`, `js/app.js` | The app |
 | `js/config.js` | Supabase address and key |
-| `supabase/001_setup.sql`, `002_buildings_levels.sql`, `003_subcategories.sql` | Database setup — run all, in order, in Supabase |
+| `supabase/001_setup.sql` … `004_home_devices.sql` | Database setup — run all, in order, in Supabase |
+| `repository.yaml`, `ha-bridge/` | Home Assistant add-on that connects the house to the app (see `ha-bridge/DOCS.md`) |
 | `manifest.json`, `sw.js`, `icons/` | Home-screen app support |
 | `netlify.toml` | Hosting settings (every page address opens the app) |
