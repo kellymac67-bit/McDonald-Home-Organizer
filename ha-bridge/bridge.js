@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.2.1';
+const VERSION = '0.2.2';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -159,6 +159,7 @@ async function buildCatalog() {
     if (e.entity_category) continue;              // skip settings / diagnostics
     let kind = null;
     if (['camera', 'switch', 'light', 'lock', 'cover'].includes(domain)) kind = domain;
+    else if (domain === 'input_boolean') kind = 'switch';            // on/off helpers such as "Boiler alerts"
     else if (domain === 'sensor' && SENSOR_CLASSES.has(dc)) kind = 'sensor';
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
     if (!kind) continue;
@@ -312,7 +313,7 @@ async function pollCommands() {
           await takeSnapshot(c.entity_id, 'request');
         } else {
           if (!['switch', 'light'].includes(row.kind)) throw new Error('Not a switch');
-          await haCall({ type: 'call_service', domain: row.kind, service: c.action, target: { entity_id: c.entity_id } });
+          await haCall({ type: 'call_service', domain: c.entity_id.split('.')[0], service: c.action, target: { entity_id: c.entity_id } });
         }
         log(`Done: ${c.action} ${c.entity_id} (asked by ${c.requested_by})`);
       } catch (e) { status = 'failed'; result = e.message; log(`Failed: ${c.action} ${c.entity_id} — ${e.message}`); }
