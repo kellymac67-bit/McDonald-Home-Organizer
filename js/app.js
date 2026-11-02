@@ -3,9 +3,10 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
 const VERSION = '1.0.0';
+const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
-  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true }
+  auth: { persistSession: true, autoRefreshToken: true, detectSessionInUrl: true, flowType: 'implicit' }
 }) : null;
 
 // ---------- state ----------
@@ -782,33 +783,72 @@ function viewFamily() {
 }
 
 // ---------- SIGN IN ----------
-function viewSignIn(msg = '') {
+function viewSignIn(mode = 'in', msg = '') {
   $('#tabs').hidden = true; $('#top').hidden = true;
+  const titles = { in: 'Sign in', new: 'First time here? Create your password', reset: 'Reset your password' };
   view().innerHTML = `<div class="signin"><img class="logo" src="/icons/icon-192.png" alt=""><h2>Home Organizer</h2>
-    <p class="muted" style="margin:0">Sign in with your email. We'll send you a code — no password needed.</p>
-    ${msg ? `<div class="card small">${msg}</div>` : ''}
-    <form id="f1" class="stack" style="display:flex;flex-direction:column;gap:10px"><input id="email" type="email" placeholder="you@example.com" autocomplete="email" autocapitalize="none" required><button class="btn primary">Email me a code</button></form>
-    <form id="f2" hidden style="display:flex;flex-direction:column;gap:10px"><div class="small muted" id="sentTo"></div><input id="otp" class="otp" inputmode="numeric" autocomplete="one-time-code" maxlength="10" placeholder="••••••"><button class="btn primary">Sign in</button><button type="button" class="btn" id="again">Use a different email</button></form></div>`;
-  let email = '';
-  $('#f1').onsubmit = async e => {
-    e.preventDefault(); email = $('#email').value.trim().toLowerCase();
-    const btn = $('#f1 button'); btn.disabled = true; btn.textContent = 'Sending…';
-    const { error } = await sb.auth.signInWithOtp({ email, options: { shouldCreateUser: true, emailRedirectTo: location.href } });
-    btn.disabled = false; btn.textContent = 'Email me a code';
-    if (error) return toast(error.message, 5000);
-    $('#f1').hidden = true; $('#f2').hidden = false; $('#sentTo').textContent = `We sent a code to ${email}. Enter it here (check spam if it's not there in a minute).`; $('#otp').focus();
-  };
-  $('#again').onclick = () => { $('#f1').hidden = false; $('#f2').hidden = true; };
-  $('#f2').onsubmit = async e => {
+    <p class="muted" style="margin:0">${titles[mode]}</p>
+    ${msg ? `<div class="card small"><div>${msg}</div></div>` : ''}
+    <form id="auth" style="display:flex;flex-direction:column;gap:10px">
+      <input id="email" type="email" placeholder="Email" autocomplete="email" autocapitalize="none" required value="${esc(sessionStorage.getItem('ho-email') || '')}">
+      ${mode !== 'reset' ? `<input id="pw" type="password" placeholder="${mode === 'new' ? 'Choose a password (8+ characters)' : 'Password'}" autocomplete="${mode === 'new' ? 'new-password' : 'current-password'}" required minlength="${mode === 'new' ? 8 : 1}">` : ''}
+      ${mode === 'new' ? '<input id="pw2" type="password" placeholder="Type it again" autocomplete="new-password" required>' : ''}
+      <button class="btn primary">${mode === 'in' ? 'Sign in' : mode === 'new' ? 'Create my password' : 'Email me a reset link'}</button>
+    </form>
+    <div style="display:flex;flex-direction:column;gap:6px">
+      ${mode !== 'in' ? '<button class="btn" data-mode="in">Back to sign in</button>' : ''}
+      ${mode !== 'new' ? '<button class="btn" data-mode="new">First time here? Create your password</button>' : ''}
+      ${mode === 'in' ? '<button class="btn" style="border:0" data-mode="reset">Forgot password?</button>' : ''}
+    </div></div>`;
+  $$('[data-mode]').forEach(b => b.onclick = () => { sessionStorage.setItem('ho-email', $('#email').value.trim()); viewSignIn(b.dataset.mode); });
+  $('#auth').onsubmit = async e => {
     e.preventDefault();
-    const { data, error } = await sb.auth.verifyOtp({ email, token: $('#otp').value.replace(/\D/g, ''), type: 'email' });
-    if (error) return toast('That code didn\'t work — try again or request a new one', 5000);
-    start(data.session);
+    const email = $('#email').value.trim().toLowerCase(); sessionStorage.setItem('ho-email', email);
+    const btn = $('#auth button'); const label = btn.textContent; btn.disabled = true; btn.textContent = 'One moment…';
+    const done = () => { btn.disabled = false; btn.textContent = label; };
+    if (mode === 'in') {
+      const { data, error } = await sb.auth.signInWithPassword({ email, password: $('#pw').value });
+      done();
+      if (error) {
+        if (/confirm/i.test(error.message)) return viewSignIn('in', `Almost there — open the confirmation email sent to <b>${esc(email)}</b> and tap its link, then sign in here.`);
+        return toast('Email or password is wrong. First time? Tap "Create your password".', 5000);
+      }
+      return start(data.session);
+    }
+    if (mode === 'new') {
+      if ($('#pw').value !== $('#pw2').value) { done(); return toast("The two passwords don't match"); }
+      const { data, error } = await sb.auth.signUp({ email, password: $('#pw').value, options: { emailRedirectTo: base() + '/' } });
+      done();
+      if (error) return toast(/registered|exists/i.test(error.message) ? 'That email already has a password. Sign in, or use "Forgot password?".' : error.message, 6000);
+      if (data.session) return start(data.session);
+      return viewSignIn('in', `Check your email (<b>${esc(email)}</b>) and tap the confirmation link. Then come back here and sign in with your new password. Look in spam if it's not there in a minute.`);
+    }
+    const { error } = await sb.auth.resetPasswordForEmail(email, { redirectTo: base() + '/' });
+    done();
+    if (error) return toast(error.message, 5000);
+    viewSignIn('in', `If <b>${esc(email)}</b> has an account, a reset link is on its way. Tap it to choose a new password.`);
+  };
+}
+function viewNewPassword() {
+  S.recovering = true;
+  $('#tabs').hidden = true; $('#top').hidden = true;
+  view().innerHTML = `<div class="signin"><img class="logo" src="/icons/icon-192.png" alt=""><h2>Choose a new password</h2>
+    <form id="np" style="display:flex;flex-direction:column;gap:10px"><input id="pw" type="password" placeholder="New password (8+ characters)" autocomplete="new-password" minlength="8" required>
+    <input id="pw2" type="password" placeholder="Type it again" autocomplete="new-password" required><button class="btn primary">Save password</button></form></div>`;
+  $('#np').onsubmit = async e => {
+    e.preventDefault();
+    if ($('#pw').value !== $('#pw2').value) return toast("The two passwords don't match");
+    const { error } = await sb.auth.updateUser({ password: $('#pw').value });
+    if (error) return toast(error.message, 5000);
+    S.recovering = false; toast('Password saved');
+    const { data: { session } } = await sb.auth.getSession(); history.replaceState(null, '', '/'); start(session);
   };
 }
 
 // ---------- boot ----------
 async function start(session) {
+  if (S.recovering || !session || S.startedFor === session.user.email) return;
+  S.startedFor = session.user.email;
   S.email = session.user.email.toLowerCase();
   $('#top').hidden = false;
   try { await loadAll(); } catch (e) { view().innerHTML = `<div class="card">Couldn't load your data: ${esc(e.message)}<button class="btn" onclick="location.reload()">Try again</button></div>`; return; }
@@ -826,7 +866,12 @@ async function boot() {
     view().innerHTML = '<div class="card"><h2>Almost ready</h2><p>Open <code>js/config.js</code> and paste in your Supabase Project URL and publishable (anon) key.</p></div>';
     return;
   }
-  sb.auth.onAuthStateChange((ev, session) => { if (ev === 'SIGNED_OUT') viewSignIn(); else if (ev === 'SIGNED_IN' && session && !S.me) start(session); });
+  sb.auth.onAuthStateChange((ev, session) => {
+    if (ev === 'PASSWORD_RECOVERY') return viewNewPassword();
+    if (ev === 'SIGNED_OUT') { S.me = null; S.startedFor = ''; viewSignIn(); }
+    else if (ev === 'SIGNED_IN' && session && !S.me && !S.recovering) setTimeout(() => start(session), 0);
+  });
+  if (recoveryLink) return viewNewPassword();
   const { data: { session } } = await sb.auth.getSession();
   if (session) start(session); else viewSignIn();
 }
