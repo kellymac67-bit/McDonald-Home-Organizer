@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '1.3.0';
+const VERSION = '1.4.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -316,6 +316,7 @@ async function openViewer(list, i, rerender) {
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const canCams = () => !!(S.me?.is_admin || S.me?.see_cameras);
 const canControl = () => !!(S.me?.is_admin || S.me?.can_control);
+const canUnlock = () => !!(S.me?.is_admin || S.me?.can_unlock);
 async function loadDevices() {
   const [d, st, al] = await Promise.all([
     sb.from('ha_devices').select('*').order('name'),
@@ -342,6 +343,7 @@ const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', 
 function devIcon(d) {
   if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
   if (d.kind === 'binary_sensor') return { moisture: '💧', door: '🚪', window: '🪟', garage_door: '🚗', opening: '🚪', motion: '🏃', smoke: '🔥', gas: '⚠️' }[d.device_class] || '◉';
+  if (d.kind === 'lock') return d.state === 'locked' ? '🔒' : '🔓';
   return DEV_ICON[d.kind] || '•';
 }
 const BIN_TEXT = { door: ['Open', 'Closed'], window: ['Open', 'Closed'], opening: ['Open', 'Closed'], garage_door: ['Open', 'Closed'],
@@ -362,7 +364,8 @@ function devValue(d) {
     const on = st === 'on'; const t = BIN_TEXT[d.device_class] || ['On', 'Off'];
     return { text: on ? t[0] : t[1], cls: on && ALARM_CLASSES.includes(d.device_class) ? 'alarm' : on ? 'on' : '' };
   }
-  if (d.kind === 'lock') return { text: st === 'locked' ? 'Locked' : st === 'unlocked' ? 'Unlocked' : st, cls: st === 'unlocked' ? 'on' : '' };
+  if (d.kind === 'lock') return { text: { locked: 'Locked', unlocked: 'Unlocked', locking: 'Locking…', unlocking: 'Unlocking…', jammed: 'JAMMED', open: 'Open' }[st] || st,
+    cls: st === 'jammed' ? 'alarm' : st === 'unlocked' || st === 'open' ? 'on' : '' };
   if (d.kind === 'cover') return { text: st[0].toUpperCase() + st.slice(1), cls: st === 'open' ? 'on' : '' };
   return { text: st };
 }
@@ -384,10 +387,13 @@ function devRow(d, showRoom) {
     const off = !d.state || d.state === 'unavailable';
     right = off ? '<span class="val off">Offline</span>'
       : `<button class="tgl" role="switch" aria-label="${esc(devName(d))}" aria-checked="${d.state === 'on'}" data-tgl="${esc(d.entity_id)}" ${canControl() ? '' : 'disabled'}></button>`;
+  } else if (d.kind === 'lock' && canUnlock() && ['locked', 'unlocked', 'jammed', 'open'].includes(d.state)) {
+    const v = devValue(d), act = d.state === 'locked' ? 'unlock' : 'lock';
+    right = `<span class="row" style="gap:6px;flex-wrap:nowrap"><span class="val ${v.cls || ''}">${esc(v.text)}</span><button class="btn sm ${act === 'lock' ? 'primary' : ''}" data-lock="${esc(d.entity_id)}" data-act="${act}">${act === 'lock' ? 'Lock' : 'Unlock'}</button></span>`;
   } else { const v = devValue(d); right = `<span class="val ${v.cls || ''}">${esc(v.text)}</span>`; }
   return `<div class="devrow"><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}</div>`;
 }
-const KIND_ORDER = { switch: 1, light: 1, lock: 2, cover: 2, binary_sensor: 3, sensor: 4 };
+const KIND_ORDER = { lock: 0, switch: 1, light: 1, cover: 2, binary_sensor: 3, sensor: 4 };
 function devicesBlock(list, { showRoom = true } = {}) {
   const cams = list.filter(d => d.kind === 'camera' && canCams());
   const rest = list.filter(d => d.kind !== 'camera').sort((a, b) => (KIND_ORDER[a.kind] || 9) - (KIND_ORDER[b.kind] || 9) || devName(a).localeCompare(devName(b)));
@@ -403,6 +409,20 @@ function wireDevices(root, redraw) {
     const ok = await sendCommand(d, want);
     if (ok) { d.state = want === 'turn_on' ? 'on' : 'off'; d.last_changed = new Date().toISOString(); }
     await sleep(ok ? 2500 : 0); await loadDevices().catch(() => {}); redraw();
+  });
+  $$('[data-lock]', root).forEach(b => b.onclick = () => {
+    const d = S.devices.find(x => x.entity_id === b.dataset.lock); if (!d) return;
+    const act = b.dataset.act;
+    const go_ = async () => {
+      closeSheet(); b.disabled = true; b.textContent = act === 'lock' ? 'Locking…' : 'Unlocking…';
+      const ok = await sendCommand(d, act);
+      if (ok) toast(act === 'lock' ? `${devName(d)} locked` : `${devName(d)} unlocked`);
+      await sleep(ok ? 3000 : 0); await loadDevices().catch(() => {}); redraw();
+    };
+    if (act === 'lock') return go_();
+    const s = sheet(`<h3>Unlock ${esc(devName(d))}?</h3><p class="small muted" style="margin:0">The door unlocks right away. You'll get a phone alert saying who unlocked it.</p>
+      <button class="btn primary" id="uYes">Unlock</button><button class="btn" id="uNo">Cancel</button>`);
+    $('#uYes', s).onclick = go_; $('#uNo', s).onclick = closeSheet;
   });
   hydrate(root);
 }
@@ -471,10 +491,10 @@ function viewDevicesHome(params) {
   const draw = () => {
     if (!$('#hdevs')) return;
     $('#hstat').innerHTML = statusLine();
-    const opts = [['all', 'All'], ...(canCams() ? [['cams', 'Cameras']] : []), ['switches', 'Switches'], ['sensors', 'Sensors']];
+    const opts = [['all', 'All'], ...(canCams() ? [['cams', 'Cameras']] : []), ['switches', 'Switches & locks'], ['sensors', 'Sensors']];
     $('#hf').innerHTML = opts.map(([k, l]) => `<button class="chip" data-f="${k}" aria-pressed="${filter === k}">${l}</button>`).join('');
     $$('#hf [data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; history.replaceState(history.state, '', filter === 'all' ? '/home' : `/home?show=${filter}`); draw(); });
-    const match = d => filter === 'all' || (filter === 'cams' ? d.kind === 'camera' : filter === 'switches' ? ['switch', 'light'].includes(d.kind) : ['sensor', 'binary_sensor', 'lock', 'cover'].includes(d.kind));
+    const match = d => filter === 'all' || (filter === 'cams' ? d.kind === 'camera' : filter === 'switches' ? ['switch', 'light', 'lock'].includes(d.kind) : ['sensor', 'binary_sensor', 'lock', 'cover'].includes(d.kind));
     const list = shownDevices().filter(d => (d.kind !== 'camera' || canCams()) && match(d));
     const groups = new Map();
     for (const d of list) {
@@ -1198,7 +1218,7 @@ function viewCats() {
 function viewFamily() {
   header('Family members', { backBtn: true }); tabs('more');
   const admin = S.me.is_admin;
-  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${S.members.map(m => `<div class="locrow" ${admin ? `data-m="${esc(m.email)}" style="cursor:pointer"` : ''}><div><div class="nm">${esc(m.name || m.email)}${m.email === S.me.email ? ' <span class="muted small">(you)</span>' : ''}</div><div class="small muted">${esc(m.email)}</div></div><div class="row" style="gap:4px">${m.is_admin ? '<span class="pill">Admin</span>' : ''}${m.see_private || m.is_admin ? '<span class="pill">🔒 Sees private</span>' : ''}${m.see_cameras || m.is_admin ? '<span class="pill">📷</span>' : ''}${m.can_control || m.is_admin ? '<span class="pill">🔌</span>' : ''}</div></div>`).join('')}</div></div>
+  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${S.members.map(m => `<div class="locrow" ${admin ? `data-m="${esc(m.email)}" style="cursor:pointer"` : ''}><div><div class="nm">${esc(m.name || m.email)}${m.email === S.me.email ? ' <span class="muted small">(you)</span>' : ''}</div><div class="small muted">${esc(m.email)}</div></div><div class="row" style="gap:4px">${m.is_admin ? '<span class="pill">Admin</span>' : ''}${m.see_private || m.is_admin ? '<span class="pill">🔒 Sees private</span>' : ''}${m.see_cameras || m.is_admin ? '<span class="pill">📷</span>' : ''}${m.can_control || m.is_admin ? '<span class="pill">🔌</span>' : ''}${m.can_unlock || m.is_admin ? '<span class="pill">🔑</span>' : ''}</div></div>`).join('')}</div></div>
     ${admin ? '<button class="btn primary" id="addM">＋ Add a family member</button>' : ''}
     <p class="small muted">Family members sign in with the email listed here — they get a code by email, no password. Send them the app link: <b>${esc(base())}</b></p>`;
   if (!admin) return;
@@ -1210,10 +1230,12 @@ function viewFamily() {
       <label class="chk"><input type="checkbox" id="mPriv" ${m?.see_private ? 'checked' : ''}> Can see private categories</label>
       <label class="chk"><input type="checkbox" id="mCam" ${m?.see_cameras ? 'checked' : ''}> Can see cameras</label>
       <label class="chk"><input type="checkbox" id="mCtl" ${m?.can_control ? 'checked' : ''}> Can use switches and lights</label>
+      <label class="chk"><input type="checkbox" id="mUnl" ${m?.can_unlock ? 'checked' : ''}> Can lock and unlock doors</label>
       <label class="chk"><input type="checkbox" id="mAdm" ${m?.is_admin ? 'checked' : ''} ${self ? 'disabled' : ''}> Admin (can manage family and categories)</label>
       <div class="row"><button class="btn primary grow" id="mSave">Save</button>${m && !self ? '<button class="btn danger" id="mDel">Remove</button>' : ''}</div>`);
     $('#mSave', s).onclick = async () => {
       const row = { name: $('#mName', s).value.trim(), see_private: $('#mPriv', s).checked, see_cameras: $('#mCam', s).checked, can_control: $('#mCtl', s).checked };
+      if ('can_unlock' in (S.me || {})) row.can_unlock = $('#mUnl', s).checked;
       if (!self) row.is_admin = $('#mAdm', s).checked;
       if (m) { const r = await run(sb.from('members').update(row).eq('email', m.email).select().single()); Object.assign(m, r); }
       else {
