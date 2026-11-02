@@ -2,7 +2,7 @@
 
 Web app for finding things in storage boxes at home. Every box and shelf gets a QR label (printed on the Brother P-touch); scanning a label opens that box's photos and contents, or shows every box on that shelf. Works in any browser and can be added to the home screen on iPhone and Android.
 
-**Hosting:** Netlify (from this GitHub repo) · **Data, sign-in, photos:** Supabase project `McDonald-Home-Organizer` (linamgjcynivkfkvghhk) · **Sign-in:** emailed code; only emails on the Family list get in.
+**Hosting:** Netlify (from this GitHub repo) · **Data, sign-in, photos:** Supabase project `McDonald-Home-Organizer` (linamgjcynivkfkvghhk) · **Sign-in:** email + password; only emails on the Family list can see anything.
 
 ## One-time setup
 
@@ -11,16 +11,8 @@ Web app for finding things in storage boxes at home. Every box and shelf gets a 
 2. Paste the whole of `supabase/001_setup.sql` → **Run**. A "destructive operations" warning is normal; the file is safe to run again.
 3. It creates the tables, the access rules, a private `photos` storage bucket, starting categories, and adds kellymac67@gmail.com as admin.
 
-### 2. Supabase — sign-in emails send a code
-1. **Authentication → Emails → Templates → Magic Link** (sometimes called "Magic link / OTP").
-2. Replace the body with:
-   ```html
-   <h2>Home Organizer sign-in</h2>
-   <p>Your code is: <strong style="font-size:24px">{{ .Token }}</strong></p>
-   <p>Enter it in the app. It expires in one hour.</p>
-   ```
-3. Do the same in the **Confirm signup** template (used the first time each person signs in).
-4. Save.
+### 2. Supabase — sign-in
+Nothing to change. Sign-in is email + password. The first time, each person taps **First time here? Create your password**, then taps the link in Supabase's standard confirmation email once. **Forgot password?** emails a reset link.
 
 ### 3. App key
 In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`sb_publishable_…`) or **anon** key (`eyJ…`) from **Project Settings → API Keys**. Never the secret / service_role key.
@@ -34,7 +26,7 @@ In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`
 **Authentication → URL Configuration**: set **Site URL** to the Netlify address and add `https://<your-site>.netlify.app/**` under **Redirect URLs**.
 
 ### 6. First sign-in
-Open the site, enter kellymac67@gmail.com, type the emailed code. Then **More → Family members** to add the family. Each person signs in with their own email.
+Open the site → **First time here? Create your password** with kellymac67@gmail.com → tap the link in the confirmation email → sign in. Then **More → Family members** to add the family; each person creates their own password the same way.
 
 ## Day to day
 - **New box:** New box tab → pick category → number fills in (XMAS-07) → name and place → Create → add photos and contents ("Add a list" takes one item per line, `3 extension cords` or `ornaments x 24`).
@@ -46,7 +38,7 @@ Open the site, enter kellymac67@gmail.com, type the emailed code. Then **More �
 - **Backup:** More → Download everything (spreadsheet).
 
 ## Notes
-- Supabase's built-in email sender is limited to a few emails per hour. Fine for a family (people stay signed in), but if codes stop arriving, add a custom SMTP sender (e.g. Resend) under Authentication → Emails → SMTP settings.
+- Supabase's built-in email sender is limited to a few emails per hour. If confirmation or reset emails stop arriving, wait an hour, or add a custom SMTP sender under Authentication → Emails → SMTP settings.
 - Free Supabase projects pause after a week with no use; open the dashboard and click Restore if that happens.
 - Photos are shrunk on the phone before upload (about 300 KB each), so the free 1 GB holds thousands.
 
