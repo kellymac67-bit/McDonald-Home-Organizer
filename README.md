@@ -30,11 +30,13 @@ In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`
 ### 6. Home Assistant bridge (cameras, switches, sensors)
 1. Supabase → SQL Editor → run `supabase/004_home_devices.sql`, then `005_device_areas.sql`, `006_locks.sql`, `007_garage.sql` and `008_scenes.sql` (adds door lock and garage door control, scenes and each person's Home screen, HA-area linking, the Chicken Coop building, and Basement / Garage / Man Cave rooms under House).
 2. Supabase → **Authentication → Users → Add user → Create new user**: email `ha-bridge@mcdonald-home.app`, a long random password, tick **Auto Confirm User**. This account can't see any boxes; it can only send device info and pick up commands.
-3. Home Assistant → **Settings → Add-ons → Add-on Store** → ⋮ → **Repositories** → add `https://github.com/kellymac67-bit/mcdonald-home-organizer` → install **McDonald Home Bridge**.
+3. Home Assistant → **Settings → Apps → Install app** → ⋮ → **Repositories** → add `https://github.com/kellymac67-bit/mcdonald-home-organizer` → install **McDonald Home Bridge**.
 4. Add-on **Configuration** tab → paste the bridge password into `bridge_password` → Save → **Info** tab → turn on *Start on boot* and *Watchdog* → **Start**. The **Log** tab should show *Signed in*, *Connected to Home Assistant* and a device count.
 5. **Monnit:** iMonnit Online → **API → API Keys → Generate Key** (name it *Home Bridge*; the secret is shown only once). Paste the Key ID and Secret into `monnit_api_key_id` / `monnit_api_secret` on the add-on's Configuration tab and restart it. Sensors appear in the app within a minute and in Home Assistant as `sensor.monnit_…` (for automations). Place them under **More → Home devices** (tap a sensor → Building or room).
 6. Only devices with an **Area** in Home Assistant appear. An area named like a building or room in the app (Barn, Shop, Garage…) is linked to it automatically.
 7. Admins can see cameras and use switches. Other family members need *See cameras* / *Use switches* turned on.
+
+**Updating the bridge:** Settings → Apps → **Install app** → ⋮ → **Check for updates** → McDonald Home Bridge → **Update**. (Newer Home Assistant calls add-ons "Apps".)
 
 ### 7. First sign-in
 Open the site → **First time here? Create your password** with your email → tap the link in the confirmation email → sign in. Then **More → Family members** to add the family; each person creates their own password the same way.
