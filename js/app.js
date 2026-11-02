@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.0.0';
+const VERSION = '2.0.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -721,7 +721,7 @@ function viewHomeDash() {
         }).join('')}</div>` : '<div class="card small muted">Pick your favorite lights under <a href="/edit-home">Edit</a>.</div>'}</section>`);
       } else if (s.key === 'glance') {
         const list = p.glance.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
-        if (list.length) parts.push(`<section class="hsec"><div class="lab">At a glance</div><div class="card glance" style="grid-template-columns:repeat(${list.length},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const txt = d.kind === 'sensor' && !isNaN(n) ? `${Math.round(n)}${/°/.test(d.unit) ? '°' : d.unit === '%' ? '%' : ''}` : v.text; return `<div><div class="gv ${v.cls || ''}">${esc(txt)}</div><div class="small muted">${esc(devName(d).replace(/ (temperature|temp|humidity)$/i, ''))}</div></div>`; }).join('')}</div></section>`);
+        if (list.length) parts.push(`<section class="hsec"><div class="lab">At a glance</div><div class="card glance" style="grid-template-columns:repeat(${list.length},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const txt = d.kind === 'sensor' && !isNaN(n) ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}${u && u.length <= 5 ? ' ' + u : ''}`) : v.text; return `<div><div class="gv ${v.cls || ''}">${esc(txt)}</div><div class="small muted">${esc(devName(d).replace(/ (temperature|temp|humidity)$/i, ''))}</div></div>`; }).join('')}</div></section>`);
       } else if (s.key === 'cameras' && canCams()) {
         const list = p.cameras.map(id => S.devices.find(d => d.entity_id === id)).filter(d => d && d.enabled);
         if (list.length) parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Cameras</div><a class="small" href="/cameras">All cameras ›</a></div><div class="cams">${list.map(camTile).join('')}</div></section>`);

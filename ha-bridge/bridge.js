@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.4.1';
+const VERSION = '0.4.2';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -18,7 +18,8 @@ const HA_API = process.env.HA_API_URL || 'http://supervisor/core/api';
 
 const COMMAND_MAX_AGE_MS = 2 * 60 * 1000;   // never run a stale "turn on" after an outage
 const MOTION_SNAPSHOT_GAP_MS = 5 * 60 * 1000;
-const SENSOR_CLASSES = new Set(['temperature', 'humidity', 'moisture', 'illuminance', 'pressure']);
+const SENSOR_CLASSES = new Set(['temperature', 'humidity', 'moisture', 'illuminance', 'pressure',
+  'wind_speed', 'precipitation', 'precipitation_intensity', 'irradiance', 'atmospheric_pressure']);   // incl. weather station
 const BINARY_CLASSES = new Set(['door', 'window', 'opening', 'garage_door', 'moisture', 'motion', 'smoke', 'gas',
   'cold', 'heat', 'problem', 'safety', 'lock', 'occupancy', 'presence', 'vibration', 'tamper']);
 const KEEP_ATTRS = ['unit_of_measurement', 'device_class', 'friendly_name', 'brightness', 'battery_level', 'current_position'];
