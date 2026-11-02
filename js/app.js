@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '1.1.0';
+const VERSION = '1.2.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -13,9 +13,9 @@ const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
 const S = {
   email: '', me: null,
   members: [], categories: [], locations: [], boxes: [], items: [], photos: [],
-  loadedAt: 0, q: '', cat: '', cleanup: null, urls: new Map(),
+  loadedAt: 0, q: '', cat: '', sub: '', cleanup: null, urls: new Map(),
 };
-const ix = { cat: new Map(), loc: new Map(), box: new Map(), boxByCode: new Map(), locByCode: new Map(),
+const ix = { catKids: new Map(), cat: new Map(), loc: new Map(), box: new Map(), boxByCode: new Map(), locByCode: new Map(),
   itemsByBox: new Map(), photosByBox: new Map(), photosByLoc: new Map(), kids: new Map() };
 
 // ---------- helpers ----------
@@ -53,6 +53,7 @@ function reindex() {
   for (const m of Object.values(ix)) m.clear();
   S.categories.sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
   S.categories.forEach(c => ix.cat.set(c.id, c));
+  S.categories.forEach(c => { const k = c.parent_id || ''; if (!ix.catKids.has(k)) ix.catKids.set(k, []); ix.catKids.get(k).push(c); });
   S.locations.forEach(l => { ix.loc.set(l.id, l); ix.locByCode.set(l.code, l); });
   S.locations.forEach(l => { const k = l.parent_id || ''; if (!ix.kids.has(k)) ix.kids.set(k, []); ix.kids.get(k).push(l); });
   for (const arr of ix.kids.values()) arr.sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
@@ -175,6 +176,17 @@ function sheet(html) {
 function closeSheet() { $('#sheet')?.remove(); $('#viewer')?.remove(); }
 
 // ---------- shared bits ----------
+const topCats = () => ix.catKids.get('') || [];
+const subCats = c => ix.catKids.get(c.id) || [];
+const catPath = c => !c ? '' : c.parent_id && ix.cat.get(c.parent_id) ? `${ix.cat.get(c.parent_id).name} › ${c.name}` : c.name;
+const inCat = (b, id) => { const c = ix.cat.get(b.category_id); return !!c && (c.id === id || c.parent_id === id); };
+function catChip(c, pressed, attr = 'data-cat') { return `<button type="button" class="chip" ${attr}="${c.id}" aria-pressed="${pressed}"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</button>`; }
+// Every category a box can go in, grouped: main categories with subs get their own row
+function catPickerHtml(selectedId) {
+  const withSubs = topCats().filter(c => subCats(c).length), plain = topCats().filter(c => !subCats(c).length);
+  return withSubs.map(m => `<div class="lab" style="margin-top:4px">${esc(m.name)}</div><div class="chips" style="flex-wrap:wrap">${subCats(m).map(c => catChip(c, c.id === selectedId)).join('')}</div>`).join('')
+    + (plain.length ? `<div class="lab" style="margin-top:4px">${withSubs.length ? 'Other' : 'Category'}</div><div class="chips" style="flex-wrap:wrap">${plain.map(c => catChip(c, c.id === selectedId)).join('')}</div>` : '');
+}
 function catPill(c) { return c ? `<span class="pill"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</span>` : ''; }
 function thumbHtml(p) { return p ? `<img class="thumb" data-path="${esc(p.thumb_path)}" alt="">` : '<div class="thumb">📦</div>'; }
 function highlight(text, toks) {
@@ -286,19 +298,27 @@ async function openViewer(list, i, rerender) {
 // ---------- SEARCH (home) ----------
 function viewHome() {
   header('Home Organizer'); tabs('search');
-  const cats = S.categories;
   view().innerHTML = `<div class="search"><input type="search" id="q" placeholder="Search boxes and items…" value="${esc(S.q)}" autocomplete="off" enterkeyhint="search">
-    <div class="chips"><button class="chip" data-cat="" aria-pressed="${!S.cat}">All</button>${cats.map(c =>
-      `<button class="chip" data-cat="${c.id}" aria-pressed="${S.cat === c.id}"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</button>`).join('')}</div></div>
+    <div class="chips" id="catRow"></div><div class="chips" id="subRow"></div></div>
     <div id="results"></div>`;
   const q = $('#q');
   q.oninput = () => { S.q = q.value; results(); };
-  $$('[data-cat]').forEach(b => b.onclick = () => { S.cat = b.dataset.cat; $$('[data-cat]').forEach(x => x.setAttribute('aria-pressed', x === b)); results(); });
+  const drawChips = () => {
+    if (S.cat && !ix.cat.get(S.cat)) S.cat = '';
+    $('#catRow').innerHTML = `<button class="chip" data-cat="" aria-pressed="${!S.cat}">All</button>${topCats().map(c => catChip(c, S.cat === c.id)).join('')}`;
+    const main = ix.cat.get(S.cat); const subs = main ? subCats(main) : [];
+    if (!subs.some(c => c.id === S.sub)) S.sub = '';
+    $('#subRow').hidden = !subs.length;
+    $('#subRow').innerHTML = subs.length ? `<button class="chip" data-sub="" aria-pressed="${!S.sub}">All ${esc(main.name)}</button>${subs.map(c => catChip(c, S.sub === c.id, 'data-sub')).join('')}` : '';
+    $$('#catRow [data-cat]').forEach(b => b.onclick = () => { S.cat = b.dataset.cat; S.sub = ''; drawChips(); results(); });
+    $$('#subRow [data-sub]').forEach(b => b.onclick = () => { S.sub = b.dataset.sub; drawChips(); results(); });
+  };
+  drawChips();
   results();
 }
 function results() {
   const toks = norm(S.q).split(/\s+/).filter(Boolean);
-  let boxes = S.boxes.filter(b => !S.cat || b.category_id === S.cat);
+  let boxes = S.boxes.filter(b => S.sub ? b.category_id === S.sub : !S.cat || inCat(b, S.cat));
   let out;
   if (!toks.length) {
     out = [...boxes].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).map(b => ({ b, hits: [] }));
@@ -307,7 +327,7 @@ function results() {
     for (const b of boxes) {
       const its = ix.itemsByBox.get(b.id) || [];
       const c = ix.cat.get(b.category_id);
-      const head = norm([b.code, b.title, b.notes, c?.name, locText(b.location_id)].join(' '));
+      const head = norm([b.code, b.title, b.notes, catPath(c), locText(b.location_id)].join(' '));
       const hay = head + ' ' + norm(its.map(i => i.name + ' ' + i.notes).join(' '));
       if (!toks.every(t => hay.includes(t))) continue;
       const hits = its.filter(i => toks.some(t => norm(i.name + ' ' + i.notes).includes(t)));
@@ -348,7 +368,7 @@ async function viewBox(code) {
   const photos = ix.photosByBox.get(b.id) || [];
   const rerender = () => viewBox(b.code);
   view().innerHTML = `
-    <div class="hero"><div class="row"><span class="bigcode">${esc(b.code)}</span><button class="chip" id="catBtn">${c ? `<span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}` : 'Category'}</button></div>
+    <div class="hero"><div class="row"><span class="bigcode">${esc(b.code)}</span><button class="chip" id="catBtn">${c ? `<span class="dot" style="background:${esc(c.color)}"></span>${esc(catPath(c))}` : 'Category'}</button></div>
       <input class="title" id="title" value="${esc(b.title)}" placeholder="Name this box (e.g. Tree lights)"></div>
     <div class="where"><div class="grow">${b.location_id ? `<div class="lab">Stored at</div><a href="/loc/${esc(ix.loc.get(b.location_id)?.code)}">📍 ${esc(whereText(b))}</a>` : '<div class="lab">Stored at</div><span class="muted">No location set</span>'}</div>
       <button class="btn sm primary" id="moveBtn">Move</button></div>
@@ -370,9 +390,8 @@ async function viewBox(code) {
   wirePhotos(view(), photos, { box_id: b.id }, rerender);
   $('#moveBtn').onclick = () => pickLocation(b);
   $('#catBtn').onclick = () => {
-    const s = sheet(`<h3>Category for ${esc(b.code)}</h3><p class="small muted" style="margin:0">The box keeps its number and label.</p>
-      <div class="list">${S.categories.map(x => `<button class="btn" style="justify-content:flex-start;border:0" data-c="${x.id}"><span class="dot" style="background:${esc(x.color)}"></span>${esc(x.name)}${x.id === b.category_id ? ' ✓' : ''}</button>`).join('')}</div>`);
-    $$('[data-c]', s).forEach(btn => btn.onclick = async () => { await save({ category_id: btn.dataset.c }); closeSheet(); rerender(); });
+    const s = sheet(`<h3>Category for ${esc(b.code)}</h3><p class="small muted" style="margin:0">The box keeps its number and label.</p>${catPickerHtml(b.category_id)}`);
+    $$('[data-cat]', s).forEach(btn => btn.onclick = async () => { await save({ category_id: btn.dataset.cat }); closeSheet(); rerender(); });
   };
   $('#addItem').onsubmit = async e => {
     e.preventDefault();
@@ -589,10 +608,10 @@ function viewNewBox(params) {
   header('New box', { backBtn: navIdx > 0 }); tabs('add');
   const presetCode = cleanCode(params.get('code') || '');
   const presetLoc = ix.locByCode.get(cleanCode(params.get('loc') || ''));
-  let cat = presetCode ? S.categories.find(c => presetCode.startsWith(c.prefix + '-')) : null;
+  let cat = presetCode ? S.categories.find(c => presetCode.startsWith(c.prefix + '-') && !subCats(c).length) : null;
   if (!S.categories.length) { view().innerHTML = '<div class="card">No categories yet — an admin needs to add one under More → Categories.</div>'; return; }
   view().innerHTML = `<div class="card">
-    <div class="lab">Category</div><div class="chips" style="flex-wrap:wrap">${S.categories.map(c => `<button type="button" class="chip" data-cat="${c.id}" aria-pressed="${cat?.id === c.id}"><span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}</button>`).join('')}</div>
+    <div id="nCats">${catPickerHtml(cat?.id)}</div>
     <label class="f">Box number<input id="nCode" value="${esc(presetCode)}" placeholder="Pick a category first" autocapitalize="characters"></label>
     <label class="f">Name<input id="nTitle" placeholder="e.g. Tree lights, Drill bits, Camera batteries"></label>
     <label class="f">Where it's stored<select id="nLoc"><option value="">— Decide later —</option>${locOptions(presetLoc?.id || '')}</select></label>
@@ -806,7 +825,7 @@ function viewMore() {
     const rows = [['Box', 'Box name', 'Category', 'Place', 'Item', 'Qty', 'Item notes', 'Box notes', 'Link']];
     for (const b of [...S.boxes].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))) {
       const its = ix.itemsByBox.get(b.id) || [{ name: '', qty: '', notes: '' }];
-      for (const i of its) rows.push([b.code, b.title, ix.cat.get(b.category_id)?.name, whereText(b), i.name, i.qty, i.notes, b.notes, boxLink(b.code)]);
+      for (const i of its) rows.push([b.code, b.title, catPath(ix.cat.get(b.category_id)), whereText(b), i.name, i.qty, i.notes, b.notes, boxLink(b.code)]);
     }
     downloadCsv(`home-organizer-${new Date().toISOString().slice(0, 10)}.csv`, rows);
   };
@@ -853,34 +872,45 @@ function viewLabels(params) {
 function viewCats() {
   header('Categories', { backBtn: true }); tabs('more');
   const admin = S.me.is_admin;
-  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${S.categories.map(c => {
-      const n = S.boxes.filter(b => b.category_id === c.id).length;
-      return `<div class="locrow" ${admin ? `data-c="${c.id}" style="cursor:pointer"` : ''}><div class="row" style="gap:8px"><span class="dot" style="background:${esc(c.color)};width:14px;height:14px"></span><span class="nm">${esc(c.name)}</span><span class="code muted small">${esc(c.prefix)}</span>${c.is_private ? '<span class="pill">🔒 Private</span>' : ''}</div><span class="count">${plural(n, 'box')}</span></div>`;
-    }).join('')}</div></div>
-    ${admin ? '<button class="btn primary" id="addCat">＋ Add a category</button>' : '<p class="small muted">Only an admin can change categories.</p>'}
-    <p class="small muted">🔒 Private categories are only visible to family members you allow to see them (set under Family members). Use a neutral prefix like STOR so the label doesn't say what's inside.</p>`;
+  const count = c => S.boxes.filter(b => b.category_id === c.id).length;
+  const row = (c, sub) => `<div class="locrow" ${admin ? `data-c="${c.id}"` : ''} style="${sub ? 'padding-left:22px;' : ''}${admin ? 'cursor:pointer' : ''}"><div class="row" style="gap:8px">${sub ? '<span class="muted">└</span>' : ''}<span class="dot" style="background:${esc(c.color)};width:14px;height:14px"></span><span class="nm">${esc(c.name)}</span><span class="code muted small">${esc(c.prefix)}</span>${c.is_private ? '<span class="pill">🔒 Private</span>' : ''}</div><span class="count">${subCats(c).length && !sub ? plural(subCats(c).length, 'sub') : plural(count(c), 'box')}</span></div>`;
+  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${topCats().map(c => row(c, false) + subCats(c).map(x => row(x, true)).join('')).join('')}</div></div>
+    ${admin ? '<div class="row"><button class="btn primary grow" id="addCat">＋ Main category</button><button class="btn grow" id="addSub">＋ Sub-category</button></div>' : '<p class="small muted">Only an admin can change categories.</p>'}
+    <p class="small muted">Boxes go in a sub-category (Decorations › Christmas) or in a main category that has no subs. Box numbers use the prefix: XMAS-01, HALL-03.<br>🔒 Private on a main category hides everything under it from family members you haven't allowed (Family members). Use a neutral prefix like STOR so labels don't say what's inside.</p>`;
   if (!admin) return;
-  const edit = c => {
+  const edit = (c, asSub) => {
     const used = c && S.boxes.some(b => b.category_id === c.id);
-    const s = sheet(`<h3>${c ? 'Edit category' : 'New category'}</h3>
-      <label class="f">Name<input id="cName" value="${esc(c?.name || '')}" placeholder="e.g. Camping gear"></label>
-      <label class="f">Box number prefix<input id="cPre" value="${esc(c?.prefix || '')}" placeholder="e.g. CAMP" autocapitalize="characters" ${used ? 'disabled' : ''}></label>
-      ${used ? '<div class="small muted">The prefix is locked because boxes already use it.</div>' : '<div class="small muted">2–6 letters or numbers. Boxes will be numbered CAMP-01, CAMP-02…</div>'}
-      <label class="f">Color<input id="cCol" type="color" value="${esc(c?.color || '#5b6b73')}" style="height:48px;padding:4px"></label>
-      <label class="chk"><input type="checkbox" id="cPriv" ${c?.is_private ? 'checked' : ''}> Private — hide from family members who aren't allowed</label>
-      <div class="row"><button class="btn primary grow" id="cSave">Save</button>${c && !used ? '<button class="btn danger" id="cDel">Delete</button>' : ''}</div>`);
+    const hasKids = c && subCats(c).length;
+    const isSub = c ? !!c.parent_id : asSub;
+    const mains = topCats().filter(m => m.id !== c?.id);
+    const s = sheet(`<h3>${c ? 'Edit category' : isSub ? 'New sub-category' : 'New main category'}</h3>
+      ${!hasKids ? `<label class="f">Main category<select id="cPar">${isSub ? '' : '<option value="">— None (this is a main category) —</option>'}${mains.map(m => `<option value="${m.id}" ${c?.parent_id === m.id ? 'selected' : ''}>${esc(m.name)}</option>`).join('')}</select></label>` : ''}
+      <label class="f">Name<input id="cName" value="${esc(c?.name || '')}" placeholder="${isSub ? 'e.g. Valentine\'s Day' : 'e.g. Camping gear'}"></label>
+      <label class="f">Box number prefix<input id="cPre" value="${esc(c?.prefix || '')}" placeholder="e.g. ${isSub ? 'VAL' : 'CAMP'}" autocapitalize="characters" ${used ? 'disabled' : ''}></label>
+      ${used ? '<div class="small muted">The prefix is locked because boxes already use it.</div>' : '<div class="small muted">2–6 letters or numbers. Boxes will be numbered like CAMP-01, CAMP-02…</div>'}
+      <label class="f">Color<input id="cCol" type="color" value="${esc(c?.color || '#0076B6')}" style="height:48px;padding:4px"></label>
+      <label class="chk" id="cPrivWrap"><input type="checkbox" id="cPriv" ${c?.is_private ? 'checked' : ''}> Private — hide from family members who aren't allowed</label>
+      <div class="row"><button class="btn primary grow" id="cSave">Save</button>${c && !used && !hasKids ? '<button class="btn danger" id="cDel">Delete</button>' : ''}</div>
+      ${c && hasKids ? '<div class="small muted">To delete this, first delete or move its sub-categories.</div>' : ''}`);
+    const par = $('#cPar', s);
+    const syncPriv = () => { $('#cPrivWrap', s).hidden = !!(par && par.value); };
+    if (par) par.onchange = syncPriv; syncPriv();
     $('#cSave', s).onclick = async () => {
-      const row = { name: $('#cName', s).value.trim(), color: $('#cCol', s).value, is_private: $('#cPriv', s).checked };
+      const parent_id = par ? (par.value || null) : (c?.parent_id || null);
+      if (asSub && !parent_id) return toast('Choose the main category');
+      const row = { name: $('#cName', s).value.trim(), color: $('#cCol', s).value, is_private: parent_id ? false : $('#cPriv', s).checked, parent_id };
       if (!used) row.prefix = cleanCode($('#cPre', s).value).replace(/-/g, '');
       if (!row.name) return toast('Give it a name');
       if (!used && !/^[A-Z0-9]{2,6}$/.test(row.prefix)) return toast('Prefix: 2–6 letters or numbers');
-      if (!c) row.sort = S.categories.length + 1;
+      if (!used && S.categories.some(x => x.prefix === row.prefix && x.id !== c?.id)) return toast(`${row.prefix} is already used`);
+      if (!c) row.sort = (parent_id ? subCats(ix.cat.get(parent_id)).length : topCats().length) + 1;
       const saved = await run(c ? sb.from('categories').update(row).eq('id', c.id).select().single() : sb.from('categories').insert(row).select().single());
       putLocal('categories', saved); closeSheet(); viewCats();
     };
-    const d = $('#cDel', s); if (d) d.onclick = async () => { await run(sb.from('categories').delete().eq('id', c.id)); dropLocal('categories', c.id); closeSheet(); viewCats(); };
+    const d = $('#cDel', s); if (d) d.onclick = async () => { if (!confirm(`Delete ${c.name}?`)) return; await run(sb.from('categories').delete().eq('id', c.id)); dropLocal('categories', c.id); closeSheet(); viewCats(); };
   };
-  $('#addCat').onclick = () => edit(null);
+  $('#addCat').onclick = () => edit(null, false);
+  $('#addSub').onclick = () => edit(null, true);
   $$('[data-c]').forEach(el => el.onclick = () => edit(ix.cat.get(el.dataset.c)));
 }
 function viewFamily() {

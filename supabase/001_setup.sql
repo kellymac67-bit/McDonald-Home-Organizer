@@ -1,4 +1,4 @@
--- Home Organizer — database setup (then also run 002_buildings_levels.sql)
+-- Home Organizer — database setup (then also run 002_buildings_levels.sql and 003_subcategories.sql)
 -- Run once in Supabase: SQL Editor → New query → paste all of this → Run.
 -- Safe to run again (it skips anything that already exists).
 
@@ -22,6 +22,7 @@ create table if not exists public.categories (
   color       text not null default '#5b6b73',
   is_private  boolean not null default false,
   sort        int not null default 0,
+  parent_id   uuid references public.categories(id) on delete restrict,
   created_at  timestamptz not null default now()
 );
 
@@ -90,6 +91,7 @@ alter table public.locations add column if not exists kind   text not null defau
 alter table public.locations add column if not exists levels int  not null default 1;
 alter table public.boxes     add column if not exists level  int;
 alter table public.moves     add column if not exists to_level int;
+alter table public.categories add column if not exists parent_id uuid references public.categories(id) on delete restrict;
 
 create index if not exists items_box_idx   on public.items(box_id);
 create index if not exists photos_box_idx  on public.photos(box_id);
@@ -117,9 +119,9 @@ $$;
 create or replace function public.can_see_category(cat uuid) returns boolean
 language sql stable security definer set search_path = public as $$
   select exists (
-    select 1 from categories c, members m
+    select 1 from categories c left join categories p on p.id = c.parent_id, members m
     where c.id = cat and m.email = public.my_email()
-      and (not c.is_private or m.see_private or m.is_admin)
+      and (not (c.is_private or coalesce(p.is_private, false)) or m.see_private or m.is_admin)
   )
 $$;
 
@@ -290,9 +292,8 @@ create policy "family delete photos" on storage.objects for delete to authentica
 -- 5. Starting data (the first person to sign in becomes the admin — see claim_first_admin)
 -- ============================================================
 
+-- (Decorations and its sub-categories are added by 003_subcategories.sql)
 insert into public.categories (name, prefix, color, is_private, sort) values
-  ('Christmas decorations', 'XMAS', '#c0392b', false, 1),
-  ('Other seasonal',        'SEAS', '#d68910', false, 2),
   ('Shop parts & tools',    'SHOP', '#2e6da4', false, 3),
   ('Video equipment',       'VID',  '#7d3c98', false, 4),
   ('Secure storage',        'STOR', '#4d5656', true,  5),

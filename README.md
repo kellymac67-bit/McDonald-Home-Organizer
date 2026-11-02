@@ -11,6 +11,7 @@ Web app for finding things in storage boxes at home. Every box and shelf gets a 
 2. Paste the whole of `supabase/001_setup.sql` → **Run**. A "destructive operations" warning is normal; the file is safe to run again.
 3. It creates the tables, the access rules, a private `photos` storage bucket, and starting categories. The first person to sign in becomes the admin.
 4. Then run `supabase/002_buildings_levels.sql` the same way. It adds buildings → rooms → shelves, shelf levels, and the building list (House, Shop, Barn, Container, Chem Shed, Pig Shed, Gun Shed, Tree House). Places made before this update are sorted in automatically.
+5. Then run `supabase/003_subcategories.sql`. It adds main categories with sub-categories: Decorations › Christmas, Spring, Easter, July 4th, Halloween, Fall, Thanksgiving. "Christmas decorations" becomes Decorations › Christmas (boxes keep XMAS numbers); "Other seasonal" is removed if empty, otherwise parked as *Other seasonal (to sort)* until its boxes are moved.
 
 ### 2. Supabase — sign-in
 Nothing to change. Sign-in is email + password. The first time, each person taps **First time here? Create your password**, then taps the link in Supabase's standard confirmation email once. **Forgot password?** emails a reset link.
@@ -36,7 +37,8 @@ Open the site → **First time here? Create your password** with your email → 
 - **Labels:** shelves and boxes get labels. More → Labels to print. Copy a link into P-touch Editor (Insert → QR Code), or download the label file and use P-touch Editor's *File → Database → Connect* to print a batch (QR = *Link* column, text = *Code* column). Mark them printed.
 - **Moving boxes:** open a shelf → *Scan boxes onto this shelf* → tap the level → scan box after box (tap another level any time). Or on a box → Move → pick the shelf → pick the level.
 - **Pre-printed labels:** scanning a code that isn't set up yet offers to create that box.
-- **Private category:** "Secure storage" (STOR) is hidden from family members unless they're allowed to see private categories (More → Family members).
+- **Categories:** main category › sub-category (Decorations › Halloween). Boxes go in a sub-category, or in a main category that has no subs; the box number uses that prefix (HALL-03). On Search, tap a main category chip and a second row of sub-category chips appears. Admin: More → Categories → *＋ Main category* / *＋ Sub-category*.
+- **Private category:** "Secure storage" (STOR), and any sub-category under it, is hidden from family members unless they're allowed to see private categories (More → Family members).
 - **Backup:** More → Download everything (spreadsheet).
 
 ## Notes
@@ -49,6 +51,6 @@ Open the site → **First time here? Create your password** with your email → 
 |---|---|
 | `index.html`, `app.css`, `js/app.js` | The app |
 | `js/config.js` | Supabase address and key |
-| `supabase/001_setup.sql`, `002_buildings_levels.sql` | Database setup — run both, in order, in Supabase |
+| `supabase/001_setup.sql`, `002_buildings_levels.sql`, `003_subcategories.sql` | Database setup — run all, in order, in Supabase |
 | `manifest.json`, `sw.js`, `icons/` | Home-screen app support |
 | `netlify.toml` | Hosting settings (every page address opens the app) |
