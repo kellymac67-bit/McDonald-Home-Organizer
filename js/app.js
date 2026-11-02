@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.1.2';
+const VERSION = '2.1.3';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -702,8 +702,7 @@ function homeAlerts() {
   const out = [];
   if (S.bridge && !bridgeOnline()) out.push({ text: `House offline — last heard ${relTime(S.bridge.last_seen)}` });
   for (const d of shownDevices()) {
-    if (d.kind === 'lock' && ['unlocked', 'open', 'jammed'].includes(d.state)) out.push({ text: `${devName(d)} is ${devValue(d).text.toLowerCase()}`, sub: d.last_changed ? `since ${new Date(d.last_changed).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '', btn: canUnlock() && d.state !== 'jammed' ? `<button class="btn sm primary" data-lock="${esc(d.entity_id)}" data-act="lock">Lock</button>` : '' });
-    if (d.kind === 'cover' && d.state === 'open') out.push({ text: `${devName(d)} is open`, sub: d.last_changed ? `since ${new Date(d.last_changed).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '', btn: canUnlock() ? `<button class="btn sm primary" data-cover="${esc(d.entity_id)}" data-act="close">Close</button>` : '' });
+    if (d.kind === 'lock' && d.state === 'jammed') out.push({ text: `${devName(d)} is jammed`, sub: 'Check the lock' });   // unlocked/open doors show in the Doors section
     if (d.kind === 'binary_sensor' && devValue(d).cls === 'alarm') out.push({ text: d.device_class === 'moisture' ? 'Water detected' : `${devName(d)}: ${devValue(d).text.replace(/!$/, '')}`, sub: `${devName(d)} · ${placeName(d)}` });
   }
   return out;
