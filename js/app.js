@@ -548,20 +548,48 @@ function viewNewBox(params) {
     go(`/b/${code}`, true);
   };
 }
+const PLACE_NAMES = ['Garage', 'Basement', 'Office', 'Loft', 'Shop Floor', 'Container', 'Chem Shed', 'Pig Shed', 'Gun Shed', 'Barn'];
+function placeNames() {
+  const extra = [...new Set(S.locations.map(l => l.name.trim()))].filter(n => n && !PLACE_NAMES.some(p => norm(p) === norm(n)))
+    .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
+  return [...PLACE_NAMES, ...extra];
+}
+function suggestCode(name, parent) {
+  const words = cleanCode(name).split('-').filter(Boolean);
+  if (!words.length) return '';
+  let c = words[0].slice(0, 4);
+  if (parent) c = `${parent.code}-${words.length > 1 ? words.map(w => w[0]).join('') : c}`;
+  c = c.slice(0, 17);
+  let out = c, n = 2;
+  while (ix.locByCode.has(out) || ix.boxByCode.has(out)) out = `${c}-${n++}`;
+  return out;
+}
 function viewNewLoc(params) {
   header('New place', { backBtn: true }); tabs('places');
   const parent = ix.locByCode.get(cleanCode(params.get('parent') || ''));
   const presetCode = cleanCode(params.get('code') || '');
   const forBox = ix.boxByCode.get(cleanCode(params.get('box') || ''));
   view().innerHTML = `<div class="card">
-    <label class="f">Name<input id="pName" placeholder="e.g. Garage, Shelf A, Top shelf"></label>
+    <label class="f">Name<select id="pPick"><option value="">— Choose a place —</option>${placeNames().map(n => `<option>${esc(n)}</option>`).join('')}<option value="__new">＋ Add a new name…</option></select></label>
+    <label class="f" id="pNewWrap" hidden>New name<input id="pName" placeholder="e.g. Attic, Shelf A, Top shelf"></label>
     <label class="f">Inside of<select id="pParent"><option value="">— Top level —</option>${locOptions(parent?.id || '')}</select></label>
-    <label class="f">Label code<input id="pCode" value="${esc(presetCode)}" placeholder="e.g. GAR-A1" autocapitalize="characters"></label>
-    <div class="small muted">Short and readable is best: GAR-A1 for Garage shelf A, top. Leave blank to number it automatically.</div>
-    <button class="btn primary" id="pGo">Create place</button></div>`;
-  $('#pName').focus();
+    <label class="f">Label code<input id="pCode" value="${esc(presetCode)}" placeholder="e.g. GAR" autocapitalize="characters"></label>
+    <div class="small muted">Filled in from the name — change it if you like. Short is best: GAR, GAR-A1 for Garage shelf A.</div>
+    <button class="btn primary" id="pGo">Create place</button></div>
+    <p class="small muted">A new name you add here joins the list for next time.</p>`;
+  let codeTouched = !!presetCode;
+  const nameVal = () => $('#pPick').value === '__new' ? $('#pName').value.trim() : $('#pPick').value;
+  const refreshCode = () => { if (!codeTouched) $('#pCode').value = suggestCode(nameVal(), ix.loc.get($('#pParent').value)); };
+  $('#pCode').oninput = () => (codeTouched = true);
+  $('#pPick').onchange = () => {
+    const isNew = $('#pPick').value === '__new'; $('#pNewWrap').hidden = !isNew;
+    if (isNew) $('#pName').focus();
+    refreshCode();
+  };
+  $('#pName').oninput = refreshCode;
+  $('#pParent').onchange = refreshCode;
   $('#pGo').onclick = async () => {
-    const name = $('#pName').value.trim(); if (!name) return toast('Give the place a name');
+    const name = nameVal(); if (!name) return toast($('#pPick').value === '__new' ? 'Type the new name' : 'Choose a place name');
     let code = cleanCode($('#pCode').value) || await nextCode('LOC');
     if (!/^[A-Z0-9-]{2,20}$/.test(code)) return toast('Code: letters, numbers and dashes only');
     if (ix.boxByCode.has(code) || ix.locByCode.has(code)) return toast(`${code} is already used`);
