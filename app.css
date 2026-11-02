@@ -203,3 +203,8 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .icpick{width:44px;height:44px;border-radius:12px;border:1px solid var(--line);background:var(--surface);display:grid;place-items:center;cursor:pointer;padding:0}
 .icpick[aria-pressed=true]{border:2px solid var(--brand);background:var(--brand-soft)}
 .chip.day{width:40px;justify-content:center;padding:6px 0}
+.wbtn{display:flex;align-items:center;gap:12px;background:var(--brand-soft);color:var(--fg);border-radius:14px;padding:12px 14px;text-decoration:none;min-height:56px}
+.wbtn svg{color:var(--brand);flex:none}
+.whero{flex-direction:row;align-items:center;gap:16px}
+.wbig{font-size:56px;font-weight:750;line-height:1;letter-spacing:-.02em}
+.gu{font-size:13px;font-weight:600;color:var(--muted);margin-left:3px}

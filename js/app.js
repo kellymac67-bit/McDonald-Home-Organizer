@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.0.1';
+const VERSION = '2.1.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -169,7 +169,7 @@ const view = () => $('#view');
 
 const routes = [
   [/^\/$/, viewHomeDash], [/^\/organizer$/, viewOrganizer], [/^\/lights$/, viewLights], [/^\/cameras$/, viewCameras],
-  [/^\/edit-home$/, viewEditHome], [/^\/scene\/([^/]+)$/, viewSceneEditor], [/^\/home$/, () => go('/', true)],
+  [/^\/edit-home$/, viewEditHome], [/^\/weather$/, viewWeather], [/^\/scene\/([^/]+)$/, viewSceneEditor], [/^\/home$/, () => go('/', true)],
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
@@ -345,6 +345,8 @@ function relTime(t) {
   return fmtDate(t);
 }
 const devName = d => d.display_name || d.name.replace(/\s+live view$/i, '').trim() || d.entity_id;
+// name without the device's own name in front ("Tallman WS Wind Speed" → "Wind Speed")
+const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
 const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉' };
 function devIcon(d) {
   if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
@@ -361,11 +363,14 @@ const ALARM_CLASSES = ['moisture', 'smoke', 'gas', 'cold', 'heat', 'problem', 's
 function devValue(d) {
   const st = d.state;
   if (!st || st === 'unavailable' || st === 'unknown') return { text: 'Offline', cls: 'off' };
+  if (d.kind === 'sensor' && d.device_class === 'timestamp') return { text: relTime(st) };
+  if (d.kind === 'sensor' && /wind.*dir/i.test(d.name) && !isNaN(parseFloat(st))) return { text: `${compass(+st)} (${Math.round(+st)}°)` };
   if (d.kind === 'sensor') {
     const n = parseFloat(st);
     if (isNaN(n)) return { text: st };
     const u = d.unit || d.attributes?.unit_of_measurement || '';
-    return { text: `${Math.round(n * 10) / 10}${u === '%' ? '%' : u ? ' ' + u : ''}` };
+    const dec = /inhg/i.test(u) ? 100 : 10;
+    return { text: `${Math.round(n * dec) / dec}${u === '%' ? '%' : u ? ' ' + u : ''}` };
   }
   if (d.kind === 'binary_sensor') {
     const on = st === 'on'; const t = BIN_TEXT[d.device_class] || ['On', 'Off'];
@@ -377,6 +382,7 @@ function devValue(d) {
   return { text: st };
 }
 function devPlace(d) { return d.location_id ? locTrail(d.location_id) : []; }
+const compass = deg => ['N', 'NNE', 'NE', 'ENE', 'E', 'ESE', 'SE', 'SSE', 'S', 'SSW', 'SW', 'WSW', 'W', 'WNW', 'NW', 'NNW'][Math.round(((deg % 360) + 360) % 360 / 22.5) % 16];
 
 function camTile(d) {
   const recent = d.last_motion && Date.now() - Date.parse(d.last_motion) < 15 * 60e3;
@@ -608,7 +614,13 @@ function groupByPlace(list) {
 }
 
 // ---- each person's Home settings ----
-const SECTIONS = [['doors', 'Doors'], ['scenes', 'Scenes'], ['lights', 'Favorite lights'], ['glance', 'At a glance'], ['cameras', 'Cameras'], ['boxes', 'Recent boxes']];
+const SECTIONS = [['doors', 'Doors'], ['scenes', 'Scenes'], ['glance', 'At a glance & weather'], ['cameras', 'Cameras'], ['boxes', 'Recent boxes']];
+const GLANCE_MAX = 7;
+const weatherDevices = () => shownDevices().filter(d => d.platform === 'ambient_station' && ['sensor', 'binary_sensor'].includes(d.kind));
+function outdoorTemp() {
+  const w = weatherDevices().filter(d => d.device_class === 'temperature');
+  return w.find(d => /^(outdoor )?temp(erature)?$/i.test(devName(d).replace(/^.*?\b(temp)/i, '$1'))) || w.find(d => !/indoor|inside|feels|dew|chill|heat|max|min|in /i.test(devName(d))) || w[0];
+}
 async function loadPrefs() {
   const { data, error } = await sb.from('home_prefs').select('prefs').eq('email', S.email).maybeSingle();
   S.prefsRaw = error ? {} : data?.prefs || {};
@@ -713,15 +725,15 @@ function viewHomeDash() {
         const list = p.scenes.map(sceneById).filter(Boolean);
         parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Scenes</div><a class="small" href="/lights">All lights ›</a></div>
           ${list.length ? `<div class="card" style="padding:4px 14px">${list.map(sceneRow).join('')}</div>` : `<div class="card small muted">No scenes on your Home yet. ${canControl() ? '<a href="/scene/new">Make one</a> or pick some under <a href="/edit-home">Edit</a>.' : ''}</div>`}</section>`);
-      } else if (s.key === 'lights') {
-        const list = p.lights.map(id => S.devices.find(d => d.entity_id === id)).filter(d => d && d.enabled);
-        parts.push(`<section class="hsec"><div class="lab">Favorite lights</div>${list.length ? `<div class="grid2">${list.map(d => {
-          const on = d.state === 'on', off = !d.state || d.state === 'unavailable';
-          return `<button class="card ltile ${on ? 'on' : ''}" ${off || !canControl() ? 'disabled' : ''} data-tgl="${esc(d.entity_id)}" role="switch" aria-checked="${on}"><span class="ic">${devIcon(d)}</span><span style="font-weight:700">${esc(devName(d))}</span><span class="small" style="font-weight:600">${off ? 'Offline' : on ? 'On' : 'Off'}</span></button>`;
-        }).join('')}</div>` : '<div class="card small muted">Pick your favorite lights under <a href="/edit-home">Edit</a>.</div>'}</section>`);
       } else if (s.key === 'glance') {
         const list = p.glance.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
-        if (list.length) parts.push(`<section class="hsec"><div class="lab">At a glance</div><div class="card glance" style="grid-template-columns:repeat(${list.length},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const txt = d.kind === 'sensor' && !isNaN(n) ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}${u && u.length <= 5 ? ' ' + u : ''}`) : v.text; return `<div><div class="gv ${v.cls || ''}">${esc(txt)}</div><div class="small muted">${esc(devName(d).replace(/ (temperature|temp|humidity)$/i, ''))}</div></div>`; }).join('')}</div></section>`);
+        const ot = outdoorTemp(), wind = weatherDevices().find(d => /wind.*speed|^wind$/i.test(devName(d)));
+        const wbtn = weatherDevices().length ? `<a class="wbtn" href="/weather"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/></svg><span class="grow"><b>Weather</b>${ot ? `<br><span class="small">${esc(devValue(ot).text)}${wind ? ` · wind ${esc(devValue(wind).text)}` : ''}</span>` : ''}</span><span aria-hidden="true">›</span></a>` : '';
+        if (list.length || wbtn) parts.push(`<section class="hsec"><div class="lab">At a glance</div>${list.length ? `<div class="card glance" style="grid-template-columns:repeat(${Math.min(list.length, 4)},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const num = d.kind === 'sensor' && !isNaN(n) && d.device_class !== 'timestamp';
+          const big = num ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${/inhg/i.test(u) ? Math.round(n * 100) / 100 : Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}`) : v.text;
+          const unit = num && !deg && !pct && u ? `<span class="gu">${esc(u)}</span>` : '';
+          const label = shortName(d).replace(/ (temperature|temp)$/i, '');
+          return `<div><div class="gv ${v.cls || ''}">${esc(big)}${unit}</div><div class="small muted">${esc(label)}</div></div>`; }).join('')}</div>` : ''}${wbtn}</section>`);
       } else if (s.key === 'cameras' && canCams()) {
         const list = p.cameras.map(id => S.devices.find(d => d.entity_id === id)).filter(d => d && d.enabled);
         if (list.length) parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Cameras</div><a class="small" href="/cameras">All cameras ›</a></div><div class="cams">${list.map(camTile).join('')}</div></section>`);
@@ -809,11 +821,7 @@ function viewEditHome() {
         ${p.scenes.map((id, i) => { const sc = sceneById(id); return `<div class="erow">${upDown(i, p.scenes.length, 'scenes')}<span class="grow" style="font-weight:650">${canControl() ? `<a href="/scene/${sc.id}" style="color:inherit">${esc(sc.name)}</a>` : esc(sc.name)}</span><button class="icb" data-rm="scenes:${i}" aria-label="Take ${esc(sc.name)} off my Home">✕</button></div>`; }).join('') || '<p class="small muted">None.</p>'}
       </div></div><div class="grid2"><button class="add" id="addScene">＋ Add a scene</button>${canControl() ? '<a class="add" href="/scene/new">＋ New scene</a>' : ''}</div></section>
 
-      <section class="hsec"><div class="lab">Favorite lights</div><div class="card" style="padding:2px 14px"><div class="list">
-        ${p.lights.map((id, i) => { const d = S.devices.find(x => x.entity_id === id); return `<div class="erow">${upDown(i, p.lights.length, 'lights')}<span class="grow" style="font-weight:650">${esc(devName(d))}</span><button class="icb" data-rm="lights:${i}" aria-label="Remove ${esc(devName(d))}">✕</button></div>`; }).join('') || '<p class="small muted">None yet.</p>'}
-      </div></div><button class="add" id="addLight">＋ Add a light or switch</button></section>
-
-      <section class="hsec"><div class="lab">At a glance — pick up to 4</div><div class="chips" style="flex-wrap:wrap">
+      <section class="hsec"><div class="lab">At a glance — pick up to ${GLANCE_MAX}</div><div class="chips" style="flex-wrap:wrap">
         ${sens.map(d => `<button class="chip" data-gl="${esc(d.entity_id)}" aria-pressed="${p.glance.includes(d.entity_id)}">${esc(devName(d))}</button>`).join('') || '<span class="small muted">No sensors yet.</span>'}</div></section>
 
       ${canCams() ? `<section class="hsec"><div class="lab">Cameras — pick up to 2</div><div class="chips" style="flex-wrap:wrap">
@@ -825,24 +833,51 @@ function viewEditHome() {
     $$('[data-mv]', el).forEach(b => b.onclick = async () => { const [k, i, d] = b.dataset.mv.split(':'); await savePrefs({ [k]: move(prefs()[k], +i, +d) }); draw(); });
     $$('[data-rm]', el).forEach(b => b.onclick = async () => { const [k, i] = b.dataset.rm.split(':'); const a = [...prefs()[k]]; a.splice(+i, 1); await savePrefs({ [k]: a }); draw(); });
     $$('[data-sec]', el).forEach(b => b.onclick = async () => { await savePrefs({ sections: prefs().sections.map(s => s.key === b.dataset.sec ? { ...s, show: !s.show } : s) }); draw(); });
-    $$('[data-gl]', el).forEach(b => b.onclick = async () => { let g = [...prefs().glance]; const id = b.dataset.gl; g = g.includes(id) ? g.filter(x => x !== id) : g.length >= 4 ? (toast('Up to 4 — take one off first'), g) : [...g, id]; await savePrefs({ glance: g }); draw(); });
+    $$('[data-gl]', el).forEach(b => b.onclick = async () => { let g = [...prefs().glance]; const id = b.dataset.gl; g = g.includes(id) ? g.filter(x => x !== id) : g.length >= GLANCE_MAX ? (toast(`Up to ${GLANCE_MAX} — take one off first`), g) : [...g, id]; await savePrefs({ glance: g }); draw(); });
     $$('[data-cm]', el).forEach(b => b.onclick = async () => { let g = [...prefs().cameras]; const id = b.dataset.cm; g = g.includes(id) ? g.filter(x => x !== id) : g.length >= 2 ? (toast('Up to 2 — take one off first'), g) : [...g, id]; await savePrefs({ cameras: g }); draw(); });
     $('#addScene').onclick = () => {
       const left = sortedScenes().filter(s => !prefs().scenes.includes(s.id));
       const s = sheet(`<h3>Add a scene to my Home</h3><div class="list">${left.map(x => `<button class="btn" style="justify-content:flex-start;border:0" data-pick="${x.id}">${sicon(x.icon)} ${esc(x.name)}</button>`).join('') || '<p class="muted small">Every scene is already on your Home.</p>'}</div>${canControl() ? '<a class="btn" href="/scene/new">＋ New scene</a>' : ''}`);
       $$('[data-pick]', s).forEach(b => b.onclick = async () => { await savePrefs({ scenes: [...prefs().scenes, b.dataset.pick] }); closeSheet(); draw(); });
     };
-    $('#addLight').onclick = () => {
-      const s = sheet('<h3>Add a favorite</h3><input type="search" id="fq" placeholder="Search lights and switches…"><div class="list" id="fl"></div>');
-      const list = () => { const t = norm($('#fq', s).value); const have = prefs().lights;
-        $('#fl', s).innerHTML = switchables().filter(d => !have.includes(d.entity_id) && (!t || norm(devName(d) + ' ' + placeName(d)).includes(t))).sort((a, b) => devName(a).localeCompare(devName(b)))
-          .map(d => `<button class="btn" style="justify-content:space-between;border:0;text-align:left" data-fav="${esc(d.entity_id)}"><span>${esc(devName(d))}</span><span class="small muted">${esc(placeName(d))}</span></button>`).join('') || '<p class="muted small">Nothing else to add.</p>';
-        $$('[data-fav]', s).forEach(b => b.onclick = async () => { await savePrefs({ lights: [...prefs().lights, b.dataset.fav] }); closeSheet(); draw(); }); };
-      $('#fq', s).oninput = list; list();
-    };
   };
   draw();
   Promise.all([loadDevices(), loadPrefs()]).then(draw).catch(() => {});
+}
+
+
+// ---- Weather (everything from the Ambient station) ----
+const W_GROUPS = [['Indoor', /indoor|inside|\bin\b/i], ['Temperature', /temp|feels|dew|chill|heat ?index/i], ['Wind', /wind|gust/i], ['Rain', /rain|precip/i],
+  ['Humidity & pressure', /humid|press|baro/i], ['Sun', /solar|uv|lux|radiat|sun/i], ['Other', /./]];
+function viewWeather() {
+  header('Weather', { backBtn: true }); tabs('home');
+  view().innerHTML = '<div id="wv" style="display:flex;flex-direction:column;gap:16px"></div>';
+  const draw = () => {
+    const el = $('#wv'); if (!el) return;
+    const all = weatherDevices();
+    if (!all.length) { el.innerHTML = '<div class="card muted">No weather station yet. Add the Ambient Weather Station integration in Home Assistant and give the station an Area.</div>'; return; }
+    const short = shortName;
+    const find = re => all.find(d => re.test(short(d)));
+    const ot = outdoorTemp(), feels = find(/feels/i), hum = all.find(d => d.device_class === 'humidity' && !/indoor|inside|\bin\b/i.test(short(d))), wind = find(/wind.*speed|^wind$/i), dir = find(/wind.*dir/i);
+    const latest = all.reduce((m, d) => d.last_changed && d.last_changed > m ? d.last_changed : m, '');
+    const val = d => d ? esc(devValue(d).text) : '';
+    const groups = new Map();
+    for (const d of all.sort((a, b) => short(a).localeCompare(short(b)))) { const g = W_GROUPS.find(([, re]) => re.test(short(d)))[0]; if (!groups.has(g)) groups.set(g, []); groups.get(g).push(d); }
+    el.innerHTML = `<div class="card whero">
+        <div class="wbig">${ot ? esc(devValue(ot).text.replace(/ ?°F$/, '°')) : '—'}</div>
+        <div class="grow" style="display:flex;flex-direction:column;gap:2px">
+          ${feels ? `<div>Feels like <b>${val(feels)}</b></div>` : ''}
+          ${hum ? `<div>Humidity <b>${val(hum)}</b></div>` : ''}
+          ${wind ? `<div>Wind <b>${val(wind)}</b>${dir && !isNaN(parseFloat(dir.state)) ? ` from the ${compass(+dir.state)}` : ''}</div>` : ''}
+          <div class="small muted">${esc(all[0].device_name || 'Ambient Weather')} · updated ${esc(relTime(latest))}</div>
+        </div></div>
+      ${W_GROUPS.map(([g]) => g).filter(g => groups.has(g)).map(g => `<section class="hsec"><div class="lab">${esc(g)}</div><div class="card" style="padding:2px 14px"><div class="list">
+        ${groups.get(g).map(d => { const v = devValue(d); return `<div class="devrow" style="min-height:48px;padding:6px 0"><span class="grow" style="font-weight:600">${esc(short(d))}</span><span class="val ${v.cls || ''}">${esc(v.text)}</span></div>`; }).join('')}
+      </div></div></section>`).join('')}`;
+  };
+  draw();
+  S.cleanup = pollDevices(draw, 30000);
+  loadDevices().then(draw).catch(() => {});
 }
 
 // ---- Scene editor ----

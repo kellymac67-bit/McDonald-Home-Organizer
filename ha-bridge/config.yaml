@@ -1,5 +1,5 @@
 name: McDonald Home Bridge
-version: "0.4.2"
+version: "0.4.3"
 slug: mcdonald_home_bridge
 description: Sends cameras, switches and sensors to the McDonald Home Organizer app, and carries out its commands. Nothing is opened to the internet.
 url: https://github.com/kellymac67-bit/mcdonald-home-organizer

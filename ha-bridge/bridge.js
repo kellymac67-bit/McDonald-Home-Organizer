@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.4.2';
+const VERSION = '0.4.3';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -168,6 +168,7 @@ async function buildCatalog() {
     if (e.entity_category) continue;              // skip settings / diagnostics
     let kind = null;
     if (['camera', 'switch', 'light', 'lock', 'cover'].includes(domain)) kind = domain;
+    else if (e.platform === 'ambient_station' && (domain === 'sensor' || domain === 'binary_sensor')) kind = domain;   // every weather reading
     else if (domain === 'input_boolean' || domain === 'fan') kind = 'switch';   // on/off helpers ("Boiler alerts") and fans (Dreo)
     else if (domain === 'sensor' && SENSOR_CLASSES.has(dc)) kind = 'sensor';
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
