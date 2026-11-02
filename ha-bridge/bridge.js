@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.4.0';
+const VERSION = '0.4.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -152,7 +152,7 @@ async function buildCatalog() {
     const domain0 = e.entity_id.split('.')[0];
     // cameras and sensors only when they have an Area (keeps the Salem Center cameras out);
     // lights, switches, locks and garage doors always, so every lamp can go in a scene
-    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean'].includes(domain0)) continue;
+    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan'].includes(domain0)) continue;
     const s = stateOf.get(e.entity_id); if (!s) continue;
     const domain = e.entity_id.split('.')[0];
     const dc = s.attributes.device_class || '';
@@ -167,7 +167,7 @@ async function buildCatalog() {
     if (e.entity_category) continue;              // skip settings / diagnostics
     let kind = null;
     if (['camera', 'switch', 'light', 'lock', 'cover'].includes(domain)) kind = domain;
-    else if (domain === 'input_boolean') kind = 'switch';            // on/off helpers such as "Boiler alerts"
+    else if (domain === 'input_boolean' || domain === 'fan') kind = 'switch';   // on/off helpers ("Boiler alerts") and fans (Dreo)
     else if (domain === 'sensor' && SENSOR_CLASSES.has(dc)) kind = 'sensor';
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
     if (!kind) continue;
