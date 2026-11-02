@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '1.5.0';
+const VERSION = '2.0.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -12,7 +12,7 @@ const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
 // ---------- state ----------
 const S = {
   email: '', me: null,
-  members: [], categories: [], locations: [], boxes: [], items: [], photos: [], devices: [], bridge: null, areaLinks: [],
+  members: [], categories: [], locations: [], boxes: [], items: [], photos: [], devices: [], bridge: null, areaLinks: [], scenes: [], prefsRaw: {},
   loadedAt: 0, q: '', cat: '', sub: '', cleanup: null, urls: new Map(),
 };
 const ix = { catKids: new Map(), cat: new Map(), loc: new Map(), box: new Map(), boxByCode: new Map(), locByCode: new Map(),
@@ -70,7 +70,7 @@ async function loadAll() {
     fetchAll('boxes'), fetchAll('items'), fetchAll('photos'),
   ]);
   Object.assign(S, { members, categories, locations, boxes, items, photos, loadedAt: Date.now() });
-  try { await loadDevices(); } catch {}
+  try { await Promise.all([loadDevices(), loadPrefs()]); } catch {}
   S.me = members.find(m => m.email === S.email) || null;
   reindex();
 }
@@ -150,14 +150,16 @@ const ICON = {
   scan: '<svg viewBox="0 0 24 24"><path d="M4 8V5a1 1 0 0 1 1-1h3M16 4h3a1 1 0 0 1 1 1v3M20 16v3a1 1 0 0 1-1 1h-3M8 20H5a1 1 0 0 1-1-1v-3M8 9h2v2H8zM14 9h2v2h-2zM8 14h2v2H8zM14 14h2v2h-2z"/></svg>',
   add: '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 11h18M12 13v5M9.5 15.5h5M7 7l2-3h6l2 3"/></svg>',
   home: '<svg viewBox="0 0 24 24"><path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/><path d="M10 20v-5h4v5"/></svg>',
+  lights: '<svg viewBox="0 0 24 24"><path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/></svg>',
+  cams: '<svg viewBox="0 0 24 24"><path d="M3 8a2 2 0 0 1 2-2h2l2-2h6l2 2h2a2 2 0 0 1 2 2v10a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/><circle cx="12" cy="13" r="3.5"/></svg>',
+  org: '<svg viewBox="0 0 24 24"><rect x="3" y="7" width="18" height="13" rx="2"/><path d="M3 11h18M10 15h4M7 7l2-3h6l2 3"/></svg>',
   more: '<svg viewBox="0 0 24 24"><circle cx="5" cy="12" r="1.3"/><circle cx="12" cy="12" r="1.3"/><circle cx="19" cy="12" r="1.3"/></svg>',
 };
 function tabs(active) {
-  const t = [['/', 'Search', 'search'], ['/places', 'Places', 'places'], ['/scan', 'Scan', 'scan'], ['/new', 'New box', 'add'],
-    ...(S.devices?.length || S.bridge ? [['/home', 'Home', 'home']] : []), ['/more', 'More', 'more']];
+  const t = [['/', 'Home', 'home'], ['/lights', 'Lights', 'lights'], ...(canCams() ? [['/cameras', 'Cameras', 'cams']] : []), ['/organizer', 'Organizer', 'org'], ['/more', 'More', 'more']];
   const nav = $('#tabs'); nav.hidden = false;
   nav.innerHTML = `<div class="in">${t.map(([href, label, ic]) =>
-    `<a href="${href}" class="t-${ic}" ${active === ic ? 'aria-current="page"' : ''}>${ic === 'scan' ? `<span class="ring">${ICON[ic]}</span>` : ICON[ic]}${label}</a>`).join('')}</div>`;
+    `<a href="${href}" class="t-${ic}" ${active === ic ? 'aria-current="page"' : ''}>${ICON[ic]}${label}</a>`).join('')}</div>`;
 }
 function header(title, { backBtn = false, right = '' } = {}) {
   $('#top').innerHTML = `${backBtn ? '<button class="back" aria-label="Back">‹</button>' : ''}<h1>${esc(title)}</h1>${right}`;
@@ -166,9 +168,11 @@ function header(title, { backBtn = false, right = '' } = {}) {
 const view = () => $('#view');
 
 const routes = [
-  [/^\/$/, viewHome], [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
+  [/^\/$/, viewHomeDash], [/^\/organizer$/, viewOrganizer], [/^\/lights$/, viewLights], [/^\/cameras$/, viewCameras],
+  [/^\/edit-home$/, viewEditHome], [/^\/scene\/([^/]+)$/, viewSceneEditor], [/^\/home$/, () => go('/', true)],
+  [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
-  [/^\/home$/, viewDevicesHome], [/^\/devices$/, viewDeviceAdmin],
+  [/^\/devices$/, viewDeviceAdmin],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -318,11 +322,13 @@ const canCams = () => !!(S.me?.is_admin || S.me?.see_cameras);
 const canControl = () => !!(S.me?.is_admin || S.me?.can_control);
 const canUnlock = () => !!(S.me?.is_admin || S.me?.can_unlock);
 async function loadDevices() {
-  const [d, st, al] = await Promise.all([
+  const [d, st, al, sc] = await Promise.all([
     sb.from('ha_devices').select('*').order('name'),
     sb.from('ha_bridge_status').select('*').eq('id', 1).maybeSingle(),
     sb.from('ha_area_links').select('*'),
+    sb.from('ha_scenes').select('*').order('sort'),
   ]);
+  S.scenes = sc.error ? [] : sc.data;
   S.devices = d.error ? [] : d.data;
   S.bridge = st.error ? null : st.data;
   S.areaLinks = al.error ? [] : al.data;
@@ -503,42 +509,6 @@ function pollDevices(redraw, ms = 10000) {
   const t = setInterval(async () => { if (document.visibilityState !== 'visible' || $('#sheet')) return; try { await loadDevices(); redraw(); } catch {} }, ms);
   return () => clearInterval(t);
 }
-function viewDevicesHome(params) {
-  header('Home'); tabs('home');
-  let filter = params.get('show') || 'all';
-  view().innerHTML = `<div id="hstat"></div><div class="chips" id="hf"></div><div id="hdevs" style="display:flex;flex-direction:column;gap:14px"></div>`;
-  const draw = () => {
-    if (!$('#hdevs')) return;
-    $('#hstat').innerHTML = statusLine();
-    const opts = [['all', 'All'], ...(canCams() ? [['cams', 'Cameras']] : []), ['switches', 'Switches & doors'], ['sensors', 'Sensors']];
-    $('#hf').innerHTML = opts.map(([k, l]) => `<button class="chip" data-f="${k}" aria-pressed="${filter === k}">${l}</button>`).join('');
-    $$('#hf [data-f]').forEach(b => b.onclick = () => { filter = b.dataset.f; history.replaceState(history.state, '', filter === 'all' ? '/home' : `/home?show=${filter}`); draw(); });
-    const match = d => filter === 'all' || (filter === 'cams' ? d.kind === 'camera' : filter === 'switches' ? ['switch', 'light', 'lock', 'cover'].includes(d.kind) : ['sensor', 'binary_sensor', 'lock', 'cover'].includes(d.kind));
-    const list = shownDevices().filter(d => (d.kind !== 'camera' || canCams()) && match(d));
-    const groups = new Map();
-    for (const d of list) {
-      const b = devPlace(d)[0];
-      const key = b ? b.id : 'area:' + (d.ha_area || '');
-      if (!groups.has(key)) groups.set(key, { b, area: d.ha_area, items: [] });
-      groups.get(key).items.push(d);
-    }
-    const order = buildings().map(b => b.id);
-    const keys = [...groups.keys()].sort((x, y) => {
-      const ix_ = order.indexOf(x), iy = order.indexOf(y);
-      if (ix_ >= 0 || iy >= 0) return (ix_ < 0 ? 999 : ix_) - (iy < 0 ? 999 : iy);
-      return x.localeCompare(y);
-    });
-    $('#hdevs').innerHTML = keys.map(k => {
-      const g = groups.get(k);
-      const title = g.b ? `<a href="/loc/${esc(g.b.code)}" style="color:inherit;text-decoration:none">${esc(g.b.name)} ›</a>` : `${esc(g.area || 'No area')} ${S.me.is_admin ? '<a class="small" href="/devices">link to a building</a>' : ''}`;
-      return `<div class="card"><h2>${title}<span class="count">${g.items.length}</span></h2>${devicesBlock(g.items, { showRoom: !!g.b })}</div>`;
-    }).join('') || `<div class="card center"><p class="muted" style="margin:0">${S.devices?.length ? 'Nothing to show here.' : 'No devices yet. Once the Home Assistant bridge is running, cameras, switches and sensors appear here.'}</p></div>`;
-    wireDevices($('#hdevs'), draw);
-  };
-  draw();
-  S.cleanup = pollDevices(draw);
-  loadDevices().then(draw).catch(() => {});
-}
 function locDevicesCard(l) {
   const ids = descendants(l.id);
   const list = shownDevices().filter(d => ids.has(d.location_id) && (d.kind !== 'camera' || canCams()));
@@ -611,11 +581,365 @@ function editDevice(d, done) {
   };
 }
 
-// ---------- SEARCH (home) ----------
-function viewHome() {
-  header('Home Organizer'); tabs('search');
+// ---------- APP 2.0: Home dashboard, Lights, Cameras, Edit Home, scene editor ----------
+const SCENE_ICONS = {
+  bulb: '<path d="M9 18h6M10 21h4M12 3a6 6 0 0 0-4 10.5c.7.7 1 1.5 1 2.5h6c0-1 .3-1.8 1-2.5A6 6 0 0 0 12 3z"/>',
+  sun: '<path d="M12 3v2M12 19v2M4.2 4.2l1.4 1.4M18.4 18.4l1.4 1.4M3 12h2M19 12h2"/><circle cx="12" cy="12" r="4"/>',
+  lamp: '<path d="M8 3h8l3 8H5z"/><path d="M12 11v8M8 21h8"/>',
+  moon: '<path d="M20 14.5A8 8 0 0 1 9.5 4 8 8 0 1 0 20 14.5z"/>',
+  tv: '<rect x="3" y="5" width="18" height="12" rx="2"/><path d="M8 21h8"/>',
+  bed: '<path d="M3 18v-6a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v6M3 15h18M7 10V7h4v3"/>',
+  house: '<path d="M3 11 12 4l9 7"/><path d="M5 10v10h14V10"/>',
+  leave: '<path d="M14 4h5v16h-5M10 8l-4 4 4 4M6 12h10"/>',
+};
+const sicon = (k, size = 22) => `<svg class="sic" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${SCENE_ICONS[k] || SCENE_ICONS.bulb}</svg>`;
+const sortedScenes = () => [...(S.scenes || [])].sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
+const sceneById = id => (S.scenes || []).find(x => x.id === id);
+const switchables = () => shownDevices().filter(d => ['switch', 'light'].includes(d.kind));
+function placeName(d) { const t = devPlace(d); return t.length ? t.map(l => l.name).join(' › ') : d.ha_area || 'No area'; }
+function groupByPlace(list) {
+  const order = buildings().map(b => b.name);
+  const g = new Map();
+  for (const d of list) { const k = placeName(d); if (!g.has(k)) g.set(k, []); g.get(k).push(d); }
+  return [...g.entries()].sort(([a], [b]) => {
+    const ia = order.indexOf(a.split(' › ')[0]), ib = order.indexOf(b.split(' › ')[0]);
+    return (ia < 0 ? 99 : ia) - (ib < 0 ? 99 : ib) || (a === 'No area') - (b === 'No area') || a.localeCompare(b);
+  });
+}
+
+// ---- each person's Home settings ----
+const SECTIONS = [['doors', 'Doors'], ['scenes', 'Scenes'], ['lights', 'Favorite lights'], ['glance', 'At a glance'], ['cameras', 'Cameras'], ['boxes', 'Recent boxes']];
+async function loadPrefs() {
+  const { data, error } = await sb.from('home_prefs').select('prefs').eq('email', S.email).maybeSingle();
+  S.prefsRaw = error ? {} : data?.prefs || {};
+}
+function prefs() {
+  const p = S.prefsRaw || {};
+  const order = (p.sections || []).filter(s => SECTIONS.some(([k]) => k === s.key));
+  for (const [k] of SECTIONS) if (!order.some(s => s.key === k)) order.push({ key: k, show: k !== 'boxes' || !S.devices?.length });
+  const glanceDefault = shownDevices().filter(d => d.kind === 'sensor' && d.device_class === 'temperature').sort((a, b) => (b.platform === 'monnit') - (a.platform === 'monnit') || devName(a).localeCompare(devName(b))).slice(0, 3).map(d => d.entity_id);
+  const camDefault = shownDevices().filter(d => d.kind === 'camera' && d.snapshot_path).slice(0, 2).map(d => d.entity_id);
+  return {
+    sections: order,
+    scenes: (p.scenes || sortedScenes().map(s => s.id)).filter(id => sceneById(id)),
+    lights: (p.lights || []).filter(id => S.devices.some(d => d.entity_id === id)),
+    glance: (p.glance || glanceDefault).filter(id => S.devices.some(d => d.entity_id === id)),
+    cameras: (p.cameras || camDefault).filter(id => S.devices.some(d => d.entity_id === id)),
+  };
+}
+async function savePrefs(patch) {
+  S.prefsRaw = { ...prefs(), ...patch };
+  const { error } = await sb.from('home_prefs').upsert({ email: S.email, prefs: S.prefsRaw, updated_at: new Date().toISOString() });
+  if (error) toast(error.message, 4000);
+}
+
+// ---- commands for scenes and groups ----
+async function sendRaw(row, label) {
+  if (!bridgeOnline()) toast('The house looks offline — trying anyway…', 3000);
+  let ins;
+  try { ins = await run(sb.from('ha_commands').insert(row).select('id').single()); } catch { return false; }
+  for (let i = 0; i < 20; i++) {
+    await sleep(1000);
+    const { data } = await sb.from('ha_commands').select('status, result').eq('id', ins.id).maybeSingle();
+    if (data?.status === 'done') { if (label) toast(label); return true; }
+    if (data?.status === 'failed') { toast(data.result || "That didn't work", 4000); return false; }
+  }
+  toast('No answer from the house yet — it may be offline', 4000);
+  return false;
+}
+function sceneRow(sc) {
+  const n = (sc.items || []).length;
+  const sub = sc.mode === 'single' ? `${plural(n, 'device')}${(sc.extras || []).length ? ' + doors' : ''}` : plural(n, 'light') + (n ? '' : ' — tap to set up');
+  const dis = canControl() ? '' : 'disabled';
+  const btns = sc.mode === 'single'
+    ? `<button class="btn sm primary sbtn" data-scene="${sc.id}" data-act="run" ${dis}>Run</button>`
+    : `<button class="btn sm primary sbtn" data-scene="${sc.id}" data-act="on" ${dis}>On</button><button class="btn sm sbtn" data-scene="${sc.id}" data-act="off" ${dis}>Off</button>`;
+  return `<div class="scrow">${sicon(sc.icon)}<div class="grow" style="min-width:0">${canControl() ? `<a class="nm" href="/scene/${sc.id}">${esc(sc.name)}</a>` : `<span class="nm">${esc(sc.name)}</span>`}<div class="small muted">${esc(sub)}</div></div>${btns}</div>`;
+}
+function wireScenes(root, redraw) {
+  $$('[data-scene]', root).forEach(b => b.onclick = async () => {
+    const sc = sceneById(b.dataset.scene); if (!sc) return;
+    const act = b.dataset.act, label = b.textContent;
+    $$(`[data-scene="${sc.id}"]`, root).forEach(x => x.disabled = true); b.textContent = '…';
+    const ok = await sendRaw({ scene_id: sc.id, action: `scene_${act}` }, `${sc.name}${act === 'run' ? '' : act === 'on' ? ' on' : ' off'}`);
+    b.textContent = label;
+    await sleep(ok ? 2500 : 0); await loadDevices().catch(() => {}); redraw();
+  });
+  $$('[data-bulk]', root).forEach(b => b.onclick = async () => {
+    const ids = b.dataset.ids.split(',').filter(Boolean); if (!ids.length) return;
+    const act = b.dataset.bulk; b.disabled = true;
+    const ok = await sendRaw({ action: `bulk_${act}`, payload: { entity_ids: ids } }, act === 'on' ? 'Turned on' : 'Turned off');
+    await sleep(ok ? 2500 : 0); await loadDevices().catch(() => {}); redraw();
+  });
+}
+
+// ---- Home ----
+function doorTile(d) {
+  const v = devValue(d);
+  let btn = '';
+  if (d.kind === 'lock' && canUnlock() && ['locked', 'unlocked', 'jammed', 'open'].includes(d.state)) {
+    const act = d.state === 'locked' ? 'unlock' : 'lock';
+    btn = `<button class="btn sm ${act === 'lock' ? 'primary' : ''}" data-lock="${esc(d.entity_id)}" data-act="${act}">${act === 'lock' ? 'Lock' : 'Unlock'}</button>`;
+  } else if (d.kind === 'cover' && canUnlock() && ['open', 'closed'].includes(d.state)) {
+    const act = d.state === 'closed' ? 'open' : 'close';
+    btn = `<button class="btn sm ${act === 'close' ? 'primary' : ''}" data-cover="${esc(d.entity_id)}" data-act="${act}">${act === 'open' ? 'Open' : 'Close'}</button>`;
+  }
+  return `<div class="card dtile ${v.cls === 'on' || v.cls === 'alarm' ? 'warn' : ''}"><div class="row" style="gap:10px;flex-wrap:nowrap"><span class="ic">${devIcon(d)}</span><div style="min-width:0"><div style="font-weight:700">${esc(devName(d))}</div><div class="small" style="font-weight:600">${esc(v.text)}</div></div></div>${btn}</div>`;
+}
+function homeAlerts() {
+  const out = [];
+  if (S.bridge && !bridgeOnline()) out.push({ text: `House offline — last heard ${relTime(S.bridge.last_seen)}` });
+  for (const d of shownDevices()) {
+    if (d.kind === 'lock' && ['unlocked', 'open', 'jammed'].includes(d.state)) out.push({ text: `${devName(d)} is ${devValue(d).text.toLowerCase()}`, sub: d.last_changed ? `since ${new Date(d.last_changed).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '', btn: canUnlock() && d.state !== 'jammed' ? `<button class="btn sm primary" data-lock="${esc(d.entity_id)}" data-act="lock">Lock</button>` : '' });
+    if (d.kind === 'cover' && d.state === 'open') out.push({ text: `${devName(d)} is open`, sub: d.last_changed ? `since ${new Date(d.last_changed).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}` : '', btn: canUnlock() ? `<button class="btn sm primary" data-cover="${esc(d.entity_id)}" data-act="close">Close</button>` : '' });
+    if (d.kind === 'binary_sensor' && devValue(d).cls === 'alarm') out.push({ text: d.device_class === 'moisture' ? 'Water detected' : `${devName(d)}: ${devValue(d).text.replace(/!$/, '')}`, sub: `${devName(d)} · ${placeName(d)}` });
+  }
+  return out;
+}
+function viewHomeDash() {
+  header('McDonald Home', { right: '<a class="hdr-link" href="/edit-home">Edit</a>' }); tabs('home');
+  view().innerHTML = '<div id="hd" style="display:flex;flex-direction:column;gap:16px"></div>';
+  const draw = () => {
+    const el = $('#hd'); if (!el) return;
+    const p = prefs();
+    const parts = [statusLine()];
+    const al = homeAlerts();
+    if (al.length) parts.push(al.map(a => `<div class="alert"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/></svg><div class="grow"><b>${esc(a.text)}</b>${a.sub ? `<br><span class="small">${esc(a.sub)}</span>` : ''}</div>${a.btn || ''}</div>`).join(''));
+    for (const s of p.sections.filter(s => s.show)) {
+      if (s.key === 'doors') {
+        const doors = shownDevices().filter(d => ['lock', 'cover'].includes(d.kind));
+        if (doors.length) parts.push(`<section class="hsec"><div class="lab">Doors</div><div class="grid2">${doors.map(doorTile).join('')}</div></section>`);
+      } else if (s.key === 'scenes') {
+        const list = p.scenes.map(sceneById).filter(Boolean);
+        parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Scenes</div><a class="small" href="/lights">All lights ›</a></div>
+          ${list.length ? `<div class="card" style="padding:4px 14px">${list.map(sceneRow).join('')}</div>` : `<div class="card small muted">No scenes on your Home yet. ${canControl() ? '<a href="/scene/new">Make one</a> or pick some under <a href="/edit-home">Edit</a>.' : ''}</div>`}</section>`);
+      } else if (s.key === 'lights') {
+        const list = p.lights.map(id => S.devices.find(d => d.entity_id === id)).filter(d => d && d.enabled);
+        parts.push(`<section class="hsec"><div class="lab">Favorite lights</div>${list.length ? `<div class="grid2">${list.map(d => {
+          const on = d.state === 'on', off = !d.state || d.state === 'unavailable';
+          return `<button class="card ltile ${on ? 'on' : ''}" ${off || !canControl() ? 'disabled' : ''} data-tgl="${esc(d.entity_id)}" role="switch" aria-checked="${on}"><span class="ic">${devIcon(d)}</span><span style="font-weight:700">${esc(devName(d))}</span><span class="small" style="font-weight:600">${off ? 'Offline' : on ? 'On' : 'Off'}</span></button>`;
+        }).join('')}</div>` : '<div class="card small muted">Pick your favorite lights under <a href="/edit-home">Edit</a>.</div>'}</section>`);
+      } else if (s.key === 'glance') {
+        const list = p.glance.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
+        if (list.length) parts.push(`<section class="hsec"><div class="lab">At a glance</div><div class="card glance" style="grid-template-columns:repeat(${list.length},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const txt = d.kind === 'sensor' && !isNaN(n) ? `${Math.round(n)}${/°/.test(d.unit) ? '°' : d.unit === '%' ? '%' : ''}` : v.text; return `<div><div class="gv ${v.cls || ''}">${esc(txt)}</div><div class="small muted">${esc(devName(d).replace(/ (temperature|temp|humidity)$/i, ''))}</div></div>`; }).join('')}</div></section>`);
+      } else if (s.key === 'cameras' && canCams()) {
+        const list = p.cameras.map(id => S.devices.find(d => d.entity_id === id)).filter(d => d && d.enabled);
+        if (list.length) parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Cameras</div><a class="small" href="/cameras">All cameras ›</a></div><div class="cams">${list.map(camTile).join('')}</div></section>`);
+      } else if (s.key === 'boxes') {
+        const bs = [...S.boxes].sort((a, b) => (b.updated_at || '').localeCompare(a.updated_at || '')).slice(0, 4);
+        parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Recent boxes</div><a class="small" href="/organizer">Organizer ›</a></div><div class="card" style="padding:4px 14px"><div class="list">${bs.map(b => boxRow(b)).join('') || '<p class="muted small">No boxes yet.</p>'}</div></div></section>`);
+      }
+    }
+    el.innerHTML = parts.join('');
+    wireDevices(el, draw); wireScenes(el, draw);
+  };
+  draw();
+  S.cleanup = pollDevices(draw);
+  Promise.all([loadDevices(), loadPrefs()]).then(draw).catch(() => {});
+}
+
+// ---- Lights ----
+function viewLights() {
+  header('Lights'); tabs('lights');
+  view().innerHTML = '<div id="lv" style="display:flex;flex-direction:column;gap:16px"></div>';
+  const draw = () => {
+    const el = $('#lv'); if (!el) return;
+    const all = switchables(), onIds = all.filter(d => d.state === 'on').map(d => d.entity_id);
+    header('Lights', { right: `<span class="hdr-note">${onIds.length} on</span>` });
+    const sc = sortedScenes();
+    el.innerHTML = `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Scenes</div>${canControl() ? '<a class="small" href="/scene/new">＋ New scene</a>' : ''}</div>
+        ${sc.length ? `<div class="card" style="padding:4px 14px">${sc.map(sceneRow).join('')}</div>` : '<div class="card small muted">No scenes yet.</div>'}
+        ${canControl() && onIds.length ? `<button class="btn" data-bulk="off" data-ids="${onIds.join(',')}">Turn off every light (${onIds.length})</button>` : ''}</section>
+      ${groupByPlace(all).map(([place, list]) => {
+        const on = list.filter(d => d.state === 'on').map(d => d.entity_id), offl = list.filter(d => d.state === 'off').map(d => d.entity_id);
+        const bulk = !canControl() ? '' : on.length ? `<button class="btn sm" data-bulk="off" data-ids="${on.join(',')}">All off</button>` : offl.length > 1 ? `<button class="btn sm" data-bulk="on" data-ids="${offl.join(',')}">All on</button>` : '';
+        return `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">${esc(place)}</div>${bulk}</div><div class="card" style="padding:2px 14px"><div class="list">${list.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => devRow(d, false)).join('')}</div></div></section>`;
+      }).join('') || '<div class="card muted">No lights or switches yet.</div>'}`;
+    wireDevices(el, draw); wireScenes(el, draw);
+  };
+  draw();
+  S.cleanup = pollDevices(draw);
+  loadDevices().then(draw).catch(() => {});
+}
+
+// ---- Cameras ----
+function viewCameras(params) {
+  header('Cameras'); tabs('cams');
+  if (!canCams()) { view().innerHTML = '<div class="card">Ask an admin to turn on <b>Can see cameras</b> for you.</div>'; return; }
+  let f = params.get('show') || 'all';
+  view().innerHTML = '<div class="chips" id="cf" style="flex-wrap:wrap"></div><div id="cv" style="display:flex;flex-direction:column;gap:16px"></div>';
+  const draw = () => {
+    const el = $('#cv'); if (!el) return;
+    const cams = shownDevices().filter(d => d.kind === 'camera');
+    header('Cameras', { right: `<span class="hdr-note">${plural(cams.length, 'camera')}</span>` });
+    const groups = groupByPlace(cams).map(([k, v]) => [k.split(' › ')[0], v]).reduce((m, [k, v]) => (m.set(k, [...(m.get(k) || []), ...v]), m), new Map());
+    const opts = [['all', 'All'], ['motion', 'Motion today'], ...[...groups.keys()].map(k => [k, k])];
+    $('#cf').innerHTML = opts.map(([k, l]) => `<button class="chip" data-f="${esc(k)}" aria-pressed="${f === k}">${esc(l)}</button>`).join('');
+    $$('#cf [data-f]').forEach(b => b.onclick = () => { f = b.dataset.f; history.replaceState(history.state, '', f === 'all' ? '/cameras' : `/cameras?show=${encodeURIComponent(f)}`); draw(); });
+    const today = new Date(); today.setHours(0, 0, 0, 0);
+    const keep = d => f === 'all' || (f === 'motion' ? d.last_motion && Date.parse(d.last_motion) >= today : true);
+    el.innerHTML = [...groups.entries()].filter(([k]) => f === 'all' || f === 'motion' || f === k).map(([k, list]) => {
+      const l = list.filter(keep).sort((a, b) => devName(a).localeCompare(devName(b)));
+      return l.length ? `<section class="hsec"><div class="lab">${esc(k)}</div><div class="cams">${l.map(camTile).join('')}</div></section>` : '';
+    }).join('') || '<div class="card muted">No cameras match.</div>';
+    wireDevices(el, draw);
+  };
+  draw();
+  S.cleanup = pollDevices(draw, 20000);
+  loadDevices().then(draw).catch(() => {});
+}
+
+// ---- Edit Home ----
+function viewEditHome() {
+  header('Edit Home', { backBtn: true, right: '<a class="hdr-link" href="/">Done</a>' }); tabs('home');
+  view().innerHTML = '<div id="eh" style="display:flex;flex-direction:column;gap:18px"></div>';
+  const move = (arr, i, d) => { const a = [...arr]; const j = i + d; if (j < 0 || j >= a.length) return a; [a[i], a[j]] = [a[j], a[i]]; return a; };
+  const upDown = (i, n, key) => `<button class="icb" data-mv="${key}:${i}:-1" aria-label="Move up" ${i === 0 ? 'disabled' : ''}>▲</button><button class="icb" data-mv="${key}:${i}:1" aria-label="Move down" ${i === n - 1 ? 'disabled' : ''}>▼</button>`;
+  const draw = () => {
+    const el = $('#eh'); if (!el) return;
+    const p = prefs();
+    const sens = shownDevices().filter(d => ['sensor', 'binary_sensor'].includes(d.kind));
+    const cams = shownDevices().filter(d => d.kind === 'camera');
+    el.innerHTML = `<p class="small muted" style="margin:0">This is your own Home screen — other family members set up theirs.</p>
+      <section class="hsec"><div class="lab">Sections</div><div class="card" style="padding:2px 14px"><div class="list">
+        ${p.sections.map((s, i) => `<div class="erow">${upDown(i, p.sections.length, 'sections')}<span class="grow" style="font-weight:650">${esc(SECTIONS.find(([k]) => k === s.key)[1])}</span><button class="tgl" role="switch" aria-checked="${s.show}" data-sec="${s.key}" aria-label="Show ${esc(s.key)}"></button></div>`).join('')}
+      </div></div><div class="small muted">Alerts (an unlocked door, water, an open garage) always show at the top.</div></section>
+
+      <section class="hsec"><div class="lab">Scenes on my Home</div><div class="card" style="padding:2px 14px"><div class="list">
+        ${p.scenes.map((id, i) => { const sc = sceneById(id); return `<div class="erow">${upDown(i, p.scenes.length, 'scenes')}<span class="grow" style="font-weight:650">${canControl() ? `<a href="/scene/${sc.id}" style="color:inherit">${esc(sc.name)}</a>` : esc(sc.name)}</span><button class="icb" data-rm="scenes:${i}" aria-label="Take ${esc(sc.name)} off my Home">✕</button></div>`; }).join('') || '<p class="small muted">None.</p>'}
+      </div></div><div class="grid2"><button class="add" id="addScene">＋ Add a scene</button>${canControl() ? '<a class="add" href="/scene/new">＋ New scene</a>' : ''}</div></section>
+
+      <section class="hsec"><div class="lab">Favorite lights</div><div class="card" style="padding:2px 14px"><div class="list">
+        ${p.lights.map((id, i) => { const d = S.devices.find(x => x.entity_id === id); return `<div class="erow">${upDown(i, p.lights.length, 'lights')}<span class="grow" style="font-weight:650">${esc(devName(d))}</span><button class="icb" data-rm="lights:${i}" aria-label="Remove ${esc(devName(d))}">✕</button></div>`; }).join('') || '<p class="small muted">None yet.</p>'}
+      </div></div><button class="add" id="addLight">＋ Add a light or switch</button></section>
+
+      <section class="hsec"><div class="lab">At a glance — pick up to 4</div><div class="chips" style="flex-wrap:wrap">
+        ${sens.map(d => `<button class="chip" data-gl="${esc(d.entity_id)}" aria-pressed="${p.glance.includes(d.entity_id)}">${esc(devName(d))}</button>`).join('') || '<span class="small muted">No sensors yet.</span>'}</div></section>
+
+      ${canCams() ? `<section class="hsec"><div class="lab">Cameras — pick up to 2</div><div class="chips" style="flex-wrap:wrap">
+        ${cams.map(d => `<button class="chip" data-cm="${esc(d.entity_id)}" aria-pressed="${p.cameras.includes(d.entity_id)}">${esc(devName(d))}</button>`).join('')}</div></section>` : ''}
+
+      <section class="hsec"><div class="lab">More</div><div class="card" style="padding:4px 14px"><div class="list">
+        ${S.me.is_admin ? '<a class="locrow" href="/devices"><span class="nm">Home devices &amp; areas</span><span>›</span></a>' : ''}
+        <a class="locrow" href="/family"><span class="nm">Family members</span><span>›</span></a></div></div></section>`;
+    $$('[data-mv]', el).forEach(b => b.onclick = async () => { const [k, i, d] = b.dataset.mv.split(':'); await savePrefs({ [k]: move(prefs()[k], +i, +d) }); draw(); });
+    $$('[data-rm]', el).forEach(b => b.onclick = async () => { const [k, i] = b.dataset.rm.split(':'); const a = [...prefs()[k]]; a.splice(+i, 1); await savePrefs({ [k]: a }); draw(); });
+    $$('[data-sec]', el).forEach(b => b.onclick = async () => { await savePrefs({ sections: prefs().sections.map(s => s.key === b.dataset.sec ? { ...s, show: !s.show } : s) }); draw(); });
+    $$('[data-gl]', el).forEach(b => b.onclick = async () => { let g = [...prefs().glance]; const id = b.dataset.gl; g = g.includes(id) ? g.filter(x => x !== id) : g.length >= 4 ? (toast('Up to 4 — take one off first'), g) : [...g, id]; await savePrefs({ glance: g }); draw(); });
+    $$('[data-cm]', el).forEach(b => b.onclick = async () => { let g = [...prefs().cameras]; const id = b.dataset.cm; g = g.includes(id) ? g.filter(x => x !== id) : g.length >= 2 ? (toast('Up to 2 — take one off first'), g) : [...g, id]; await savePrefs({ cameras: g }); draw(); });
+    $('#addScene').onclick = () => {
+      const left = sortedScenes().filter(s => !prefs().scenes.includes(s.id));
+      const s = sheet(`<h3>Add a scene to my Home</h3><div class="list">${left.map(x => `<button class="btn" style="justify-content:flex-start;border:0" data-pick="${x.id}">${sicon(x.icon)} ${esc(x.name)}</button>`).join('') || '<p class="muted small">Every scene is already on your Home.</p>'}</div>${canControl() ? '<a class="btn" href="/scene/new">＋ New scene</a>' : ''}`);
+      $$('[data-pick]', s).forEach(b => b.onclick = async () => { await savePrefs({ scenes: [...prefs().scenes, b.dataset.pick] }); closeSheet(); draw(); });
+    };
+    $('#addLight').onclick = () => {
+      const s = sheet('<h3>Add a favorite</h3><input type="search" id="fq" placeholder="Search lights and switches…"><div class="list" id="fl"></div>');
+      const list = () => { const t = norm($('#fq', s).value); const have = prefs().lights;
+        $('#fl', s).innerHTML = switchables().filter(d => !have.includes(d.entity_id) && (!t || norm(devName(d) + ' ' + placeName(d)).includes(t))).sort((a, b) => devName(a).localeCompare(devName(b)))
+          .map(d => `<button class="btn" style="justify-content:space-between;border:0;text-align:left" data-fav="${esc(d.entity_id)}"><span>${esc(devName(d))}</span><span class="small muted">${esc(placeName(d))}</span></button>`).join('') || '<p class="muted small">Nothing else to add.</p>';
+        $$('[data-fav]', s).forEach(b => b.onclick = async () => { await savePrefs({ lights: [...prefs().lights, b.dataset.fav] }); closeSheet(); draw(); }); };
+      $('#fq', s).oninput = list; list();
+    };
+  };
+  draw();
+  Promise.all([loadDevices(), loadPrefs()]).then(draw).catch(() => {});
+}
+
+// ---- Scene editor ----
+const DAY_LETTERS = ['S', 'M', 'T', 'W', 'T', 'F', 'S'];
+function viewSceneEditor(id) {
+  const existing = id !== 'new' ? sceneById(id) : null;
+  header(existing ? 'Edit scene' : 'New scene', { backBtn: true }); tabs('lights');
+  if (!canControl()) { view().innerHTML = '<div class="card">Ask an admin to turn on <b>Can use switches and lights</b> for you.</div>'; return; }
+  if (id !== 'new' && !existing) { view().innerHTML = '<div class="card">That scene was deleted.</div>'; return; }
+  const sc = existing ? JSON.parse(JSON.stringify(existing)) : { name: '', icon: 'bulb', mode: 'pair', items: [], extras: [], extras_with: 'off', schedule: {} };
+  let onHome = existing ? prefs().scenes.includes(existing.id) : true, q = '';
+  view().innerHTML = `<label class="f">Name<input id="sName" value="${esc(sc.name)}" placeholder="e.g. Outside, Good night"></label>
+    <div><div class="lab" style="margin-bottom:6px">Icon</div><div class="row" id="sIcons"></div></div>
+    <section class="hsec"><div class="lab" id="sCount"></div><input type="search" id="sq" placeholder="Search lights and switches…"><div id="sItems"></div></section>
+    <section class="hsec"><div class="lab">Buttons</div><div class="card" style="padding:2px 14px" id="sMode"></div></section>
+    <section class="hsec" id="sExtrasWrap"></section>
+    <section class="hsec"><div class="lab">Schedule</div><div id="sSched" style="display:flex;flex-direction:column;gap:10px"></div></section>
+    <label class="chk"><input type="checkbox" id="sHome" ${onHome ? 'checked' : ''}> Show on my Home screen</label>
+    <button class="btn primary" id="sSave">Save scene</button>
+    ${existing ? '<button class="btn danger" id="sDel">Delete scene</button>' : ''}`;
+  const icons = () => { $('#sIcons').innerHTML = Object.keys(SCENE_ICONS).map(k => `<button type="button" class="icpick" aria-pressed="${sc.icon === k}" data-ic="${k}" aria-label="${k}">${sicon(k, 20)}</button>`).join('');
+    $$('#sIcons [data-ic]').forEach(b => b.onclick = () => { sc.icon = b.dataset.ic; icons(); }); };
+  const items = () => {
+    const t = norm(q), sel = new Map(sc.items.map(i => [i.entity_id, i]));
+    $('#sCount').textContent = `What it controls · ${sc.items.length} selected`;
+    const list = switchables().filter(d => sel.has(d.entity_id) || !t || norm(devName(d) + ' ' + placeName(d)).includes(t));
+    $('#sItems').innerHTML = groupByPlace(list).map(([place, ds]) => `<div class="lab" style="margin:10px 0 4px">${esc(place)}</div><div class="card" style="padding:2px 14px"><div class="list">${ds.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => {
+      const it = sel.get(d.entity_id);
+      return `<div class="erow"><label class="chk grow"><input type="checkbox" data-it="${esc(d.entity_id)}" ${it ? 'checked' : ''}> ${esc(devName(d))}</label>${it && sc.mode === 'single' ? `<select data-tg="${esc(d.entity_id)}" style="width:auto;min-height:36px"><option value="on" ${(it.target || 'on') === 'on' ? 'selected' : ''}>Turn on</option><option value="off" ${it.target === 'off' ? 'selected' : ''}>Turn off</option></select>` : ''}</div>`;
+    }).join('')}</div></div>`).join('') || '<p class="muted small">No lights match.</p>';
+    $$('[data-it]').forEach(c => c.onchange = () => { if (c.checked) sc.items.push({ entity_id: c.dataset.it, target: 'on' }); else sc.items = sc.items.filter(i => i.entity_id !== c.dataset.it); items(); });
+    $$('[data-tg]').forEach(s => s.onchange = () => { sc.items.find(i => i.entity_id === s.dataset.tg).target = s.value; });
+  };
+  const mode = () => {
+    $('#sMode').innerHTML = `<label class="erow"><input type="radio" name="sm" value="pair" ${sc.mode === 'pair' ? 'checked' : ''} style="width:22px;height:22px;min-height:0"><span class="grow"><b>On and Off</b><br><span class="small muted">Off turns the same things off</span></span></label>
+      <label class="erow"><input type="radio" name="sm" value="single" ${sc.mode === 'single' ? 'checked' : ''} style="width:22px;height:22px;min-height:0"><span class="grow"><b>One button</b><br><span class="small muted">A mix — some things on, some off (like Good night)</span></span></label>`;
+    $$('#sMode input').forEach(r => r.onchange = () => { sc.mode = r.value; const s = sc.schedule || {}; sc.schedule = sc.mode === 'single' ? { run: s.run || s.on || { kind: 'none' } } : { on: s.on || s.run || { kind: 'none' }, off: s.off || { kind: 'none' } }; items(); extras(); sched(); });
+  };
+  const extras = () => {
+    const doors = shownDevices().filter(d => ['lock', 'cover'].includes(d.kind));
+    if (!canUnlock() || !doors.length) { $('#sExtrasWrap').innerHTML = sc.extras.length ? '<div class="small muted">This scene also locks or closes doors — only people allowed to use doors can change that.</div>' : ''; return; }
+    const has = (id, a) => sc.extras.some(x => x.entity_id === id && x.action === a);
+    $('#sExtrasWrap').innerHTML = `<div class="lab">Also (optional)</div><div class="card" style="padding:2px 14px"><div class="list">${doors.map(d => {
+      const a = d.kind === 'lock' ? 'lock' : 'close';
+      return `<label class="erow"><input type="checkbox" data-ex="${esc(d.entity_id)}|${a}" ${has(d.entity_id, a) ? 'checked' : ''} style="width:22px;height:22px;min-height:0"><span class="grow" style="font-weight:650">${a === 'lock' ? 'Lock' : 'Close'} ${esc(devName(d))}</span></label>`;
+    }).join('')}</div></div>${sc.mode === 'pair' ? `<label class="f">Do these with the<select id="sWith"><option value="off" ${sc.extras_with === 'off' ? 'selected' : ''}>Off button</option><option value="on" ${sc.extras_with === 'on' ? 'selected' : ''}>On button</option></select></label>` : ''}<div class="small muted">You'll get a phone alert whenever a scene locks a door or closes the garage.</div>`;
+    $$('[data-ex]').forEach(c => c.onchange = () => { const [eid, a] = c.dataset.ex.split('|'); sc.extras = sc.extras.filter(x => !(x.entity_id === eid && x.action === a)); if (c.checked) sc.extras.push({ entity_id: eid, action: a }); });
+    const w = $('#sWith'); if (w) w.onchange = () => (sc.extras_with = w.value);
+  };
+  const sched = () => {
+    const btns = sc.mode === 'single' ? [['run', 'Run']] : [['on', 'Turn on'], ['off', 'Turn off']];
+    sc.schedule = sc.schedule || {};
+    $('#sSched').innerHTML = btns.map(([k, label]) => {
+      const s = sc.schedule[k] || { kind: 'none' }; const days = s.days || [0, 1, 2, 3, 4, 5, 6];
+      return `<div class="card" style="gap:8px"><div class="row" style="justify-content:space-between;flex-wrap:nowrap"><b>${label}</b>
+        <select data-sk="${k}" style="width:auto"><option value="none" ${s.kind === 'none' ? 'selected' : ''}>No schedule</option><option value="time" ${s.kind === 'time' ? 'selected' : ''}>At a time</option><option value="sunset" ${s.kind === 'sunset' ? 'selected' : ''}>At sunset</option><option value="sunrise" ${s.kind === 'sunrise' ? 'selected' : ''}>At sunrise</option></select></div>
+        ${s.kind === 'time' ? `<input type="time" data-st="${k}" value="${esc(s.time || '22:00')}">` : ''}
+        ${s.kind === 'sunset' || s.kind === 'sunrise' ? `<select data-so="${k}">${[-60, -30, -15, 0, 15, 30, 60].map(m => `<option value="${m}" ${(+s.offset || 0) === m ? 'selected' : ''}>${m === 0 ? `Right at ${s.kind}` : `${Math.abs(m)} min ${m < 0 ? 'before' : 'after'} ${s.kind}`}</option>`).join('')}</select>` : ''}
+        ${s.kind !== 'none' ? `<div class="row" style="gap:6px">${DAY_LETTERS.map((L, i) => `<button type="button" class="chip day" data-sd="${k}:${i}" aria-pressed="${days.includes(i)}" aria-label="${['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday'][i]}">${L}</button>`).join('')}</div>` : ''}</div>`;
+    }).join('') + '<div class="small muted">Schedules run on the Pi at home, even if the internet is down.</div>';
+    $$('[data-sk]').forEach(s => s.onchange = () => { const k = s.dataset.sk; sc.schedule[k] = { ...(sc.schedule[k] || {}), kind: s.value, days: (sc.schedule[k] || {}).days || [0, 1, 2, 3, 4, 5, 6], time: (sc.schedule[k] || {}).time || '22:00', offset: (sc.schedule[k] || {}).offset || 0 }; sched(); });
+    $$('[data-st]').forEach(i => i.onchange = () => (sc.schedule[i.dataset.st].time = i.value));
+    $$('[data-so]').forEach(i => i.onchange = () => (sc.schedule[i.dataset.so].offset = +i.value));
+    $$('[data-sd]').forEach(b => b.onclick = () => { const [k, d] = b.dataset.sd.split(':'); const s = sc.schedule[k]; const days = new Set(s.days || [0, 1, 2, 3, 4, 5, 6]); days.has(+d) ? days.delete(+d) : days.add(+d); if (!days.size) return toast('Pick at least one day'); s.days = [...days].sort(); sched(); });
+  };
+  $('#sName').oninput = e => (sc.name = e.target.value);
+  $('#sq').oninput = e => { q = e.target.value; items(); };
+  $('#sHome').onchange = e => (onHome = e.target.checked);
+  icons(); items(); mode(); extras(); sched();
+  $('#sSave').onclick = async () => {
+    sc.name = sc.name.trim();
+    if (!sc.name) return toast('Give the scene a name');
+    if (!sc.items.length && !sc.extras.length) return toast('Pick at least one light or switch');
+    const row = { name: sc.name, icon: sc.icon, mode: sc.mode, items: sc.items.map(i => sc.mode === 'single' ? { entity_id: i.entity_id, target: i.target || 'on' } : { entity_id: i.entity_id }), extras: sc.extras, extras_with: sc.extras_with, schedule: sc.schedule };
+    if (!existing) row.sort = (S.scenes || []).reduce((m, x) => Math.max(m, x.sort || 0), 0) + 1;
+    const saved = await run(existing ? sb.from('ha_scenes').update(row).eq('id', existing.id).select().single() : sb.from('ha_scenes').insert(row).select().single());
+    S.scenes = [...(S.scenes || []).filter(x => x.id !== saved.id), saved];
+    const list = prefs().scenes.filter(x => x !== saved.id);
+    await savePrefs({ scenes: onHome ? (existing && prefs().scenes.includes(saved.id) ? prefs().scenes : [...list, saved.id]) : list });
+    toast(`${saved.name} saved`); back('/lights');
+  };
+  const del = $('#sDel'); if (del) del.onclick = async () => {
+    if (!confirm(`Delete the scene "${existing.name}" for everyone?`)) return;
+    await run(sb.from('ha_scenes').delete().eq('id', existing.id));
+    S.scenes = S.scenes.filter(x => x.id !== existing.id);
+    toast('Scene deleted'); back('/lights');
+  };
+}
+
+// ---------- ORGANIZER (search) ----------
+function viewOrganizer() {
+  header('Organizer'); tabs('org');
   view().innerHTML = `<div class="search"><input type="search" id="q" placeholder="Search boxes and items…" value="${esc(S.q)}" autocomplete="off" enterkeyhint="search">
     <div class="chips" id="catRow"></div><div class="chips" id="subRow"></div></div>
+    <div class="qa"><a class="qbtn primary" href="/scan">${ICON.scan}Scan label</a><a class="qbtn" href="/new">${ICON.add}New box</a><a class="qbtn" href="/labels"><svg viewBox="0 0 24 24"><path d="M6 9V3h12v6M6 18H4v-7h16v7h-2M7 14h10v7H7z"/></svg>Labels</a></div>
+    <section class="hsec" id="blds"><div class="row" style="justify-content:space-between"><div class="lab">Buildings</div><a class="small" href="/places">All places ›</a></div>
+      <div class="grid2">${buildings().map(l => { const sm = placeSummary(l); return `<a class="bld" href="/loc/${esc(l.code)}"><span class="nm">${esc(l.name)}</span><span class="small muted">${esc(sm.text || ' ')}</span><span class="count" style="align-self:flex-start">${plural(sm.boxes, 'box')}</span></a>`; }).join('')}</div></section>
     <div id="results"></div>`;
   const q = $('#q');
   q.oninput = () => { S.q = q.value; results(); };
@@ -634,6 +958,7 @@ function viewHome() {
 }
 function results() {
   const toks = norm(S.q).split(/\s+/).filter(Boolean);
+  const bl = $('#blds'); if (bl) bl.hidden = !!(toks.length || S.cat);
   let boxes = S.boxes.filter(b => S.sub ? b.category_id === S.sub : !S.cat || inCat(b, S.cat));
   let out;
   if (!toks.length) {
@@ -668,7 +993,7 @@ function results() {
 async function viewBox(code) {
   code = cleanCode(code);
   const b = ix.boxByCode.get(code);
-  tabs('search');
+  tabs('org');
   if (!b) {
     header(code, { backBtn: true });
     const known = ix.locByCode.get(code);
@@ -808,7 +1133,7 @@ function locRow(l) {
     ${l.kind === 'shelf' && levelsOf(l) > 1 ? `<div class="small muted">${levelsOf(l)} levels</div>` : sm.text ? `<div class="small muted">${esc(sm.text)}</div>` : ''}</div><span class="count">${plural(sm.boxes, 'box')}</span></a>`;
 }
 function viewPlaces() {
-  header('Places'); tabs('places');
+  header('Places'); tabs('org');
   const unassigned = S.boxes.filter(b => !b.location_id);
   const blds = buildings(); const others = (ix.kids.get('') || []).filter(l => l.kind !== 'building');
   view().innerHTML = `<div class="card" style="padding:10px 14px 4px"><h2>Buildings <span class="count">${blds.length}</span></h2>
@@ -822,7 +1147,7 @@ function viewPlaces() {
 async function viewLoc(code) {
   code = cleanCode(code);
   const l = ix.locByCode.get(code);
-  tabs('places');
+  tabs('org');
   if (!l) {
     header(code, { backBtn: true });
     if (ix.boxByCode.get(code)) return go(`/b/${code}`, true);
@@ -925,7 +1250,7 @@ async function nextCode(prefix) {
   return `${prefix}-${String((nums.length ? Math.max(...nums) : 0) + 1).padStart(2, '0')}`;
 }
 function viewNewBox(params) {
-  header('New box', { backBtn: navIdx > 0 }); tabs('add');
+  header('New box', { backBtn: navIdx > 0 }); tabs('org');
   const presetCode = cleanCode(params.get('code') || '');
   const presetLoc = ix.locByCode.get(cleanCode(params.get('loc') || ''));
   let cat = presetCode ? S.categories.find(c => presetCode.startsWith(c.prefix + '-') && !subCats(c).length) : null;
@@ -994,7 +1319,7 @@ function viewNewLoc(params) {
   const presetCode = cleanCode(params.get('code') || '');
   const forBox = ix.boxByCode.get(cleanCode(params.get('box') || ''));
   const kind = ['building', 'room', 'shelf'].includes(params.get('kind')) ? params.get('kind') : parent ? (parent.kind === 'building' ? 'room' : 'shelf') : 'building';
-  header(`New ${KIND_LABEL[kind].toLowerCase()}`, { backBtn: true }); tabs('places');
+  header(`New ${KIND_LABEL[kind].toLowerCase()}`, { backBtn: true }); tabs('org');
   if (kind === 'building' && !S.me.is_admin) { view().innerHTML = '<div class="card">Only an admin can add buildings.</div>'; return; }
   const nameField = kind === 'room'
     ? `<label class="f">Room<select id="pPick"><option value="">— Choose a room —</option>${roomNames().map(n => `<option>${esc(n)}</option>`).join('')}<option value="__new">＋ Add a new name…</option></select></label>
@@ -1046,7 +1371,7 @@ function parseScan(text) {
   return code ? { type: 'unknown', code } : null;
 }
 function viewScan(params) {
-  tabs('scan');
+  tabs('org');
   let to = ix.locByCode.get(cleanCode(params.get('to') || ''));
   const forBox = ix.boxByCode.get(cleanCode(params.get('box') || ''));
   let lvl = parseInt(params.get('level')) || null;
@@ -1133,6 +1458,7 @@ function viewMore() {
       <a class="locrow" href="/labels"><span class="nm">Labels to print</span><span class="count">${unl}</span></a>
       <a class="locrow" href="/categories"><span class="nm">Categories</span><span class="count">${S.categories.length}</span></a>
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
+      <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
       ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
       <a class="locrow" href="#" id="exp"><span class="nm">Download everything (spreadsheet)</span><span class="muted">CSV</span></a>
     </div></div>
@@ -1159,7 +1485,7 @@ function downloadCsv(name, rows) {
   document.body.appendChild(a); a.click(); setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
 }
 function viewLabels(params) {
-  header('Labels to print', { backBtn: true }); tabs('more');
+  header('Labels to print', { backBtn: true }); tabs('org');
   const all = params.get('all') === '1';
   const boxes = S.boxes.filter(b => all || !b.labeled).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
   const locs = S.locations.filter(l => l.kind === 'shelf' && (all || !l.labeled)).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));

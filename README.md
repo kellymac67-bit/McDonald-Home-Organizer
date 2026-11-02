@@ -28,7 +28,7 @@ In `js/config.js`, `SUPABASE_KEY` must hold the project's **publishable** key (`
 **Authentication → URL Configuration**: set **Site URL** to the Netlify address and add `https://<your-site>.netlify.app/**` under **Redirect URLs**.
 
 ### 6. Home Assistant bridge (cameras, switches, sensors)
-1. Supabase → SQL Editor → run `supabase/004_home_devices.sql`, then `005_device_areas.sql`, `006_locks.sql` and `007_garage.sql` (adds door lock and garage door control, HA-area linking, the Chicken Coop building, and Basement / Garage / Man Cave rooms under House).
+1. Supabase → SQL Editor → run `supabase/004_home_devices.sql`, then `005_device_areas.sql`, `006_locks.sql`, `007_garage.sql` and `008_scenes.sql` (adds door lock and garage door control, scenes and each person's Home screen, HA-area linking, the Chicken Coop building, and Basement / Garage / Man Cave rooms under House).
 2. Supabase → **Authentication → Users → Add user → Create new user**: email `ha-bridge@mcdonald-home.app`, a long random password, tick **Auto Confirm User**. This account can't see any boxes; it can only send device info and pick up commands.
 3. Home Assistant → **Settings → Add-ons → Add-on Store** → ⋮ → **Repositories** → add `https://github.com/kellymac67-bit/mcdonald-home-organizer` → install **McDonald Home Bridge**.
 4. Add-on **Configuration** tab → paste the bridge password into `bridge_password` → Save → **Info** tab → turn on *Start on boot* and *Watchdog* → **Start**. The **Log** tab should show *Signed in*, *Connected to Home Assistant* and a device count.
@@ -48,7 +48,9 @@ Open the site → **First time here? Create your password** with your email → 
 - **Pre-printed labels:** scanning a code that isn't set up yet offers to create that box.
 - **Categories:** main category › sub-category (Decorations › Halloween). Boxes go in a sub-category, or in a main category that has no subs; the box number uses that prefix (HALL-03). On Search, tap a main category chip and a second row of sub-category chips appears. Admin: More → Categories → *＋ Main category* / *＋ Sub-category*.
 - **Private category:** "Secure storage" (STOR), and any sub-category under it, is hidden from family members unless they're allowed to see private categories (More → Family members).
-- **Home tab:** every camera, switch and sensor grouped by building, with a *House connected* light. Tap a switch to flip it (takes a couple of seconds); tap a camera for its latest picture, *Take a new picture*, recent motion pictures and *Live in Ring*. Building pages show their own devices too.
+- **Five tabs:** **Home** (your own everyday screen: alerts, doors, scenes, favorite lights, readings, two cameras — set it up with *Edit*), **Lights** (all scenes, every light by room, *All off*), **Cameras**, **Organizer** (search, *Scan label*, *New box*, *Labels*, buildings → rooms → shelves → boxes) and **More**. Scanning a box or shelf QR label still opens it straight away.
+- **Scenes:** Lights → *＋ New scene* (or tap a scene's name to edit). *On and Off* scenes switch a group together; *One button* scenes mix on and off (like Good night). Optional: lock the front door / close the garage, and a schedule (a time, or sunset/sunrise ± minutes, chosen days). Scenes are shared by the family; each person picks which appear on their Home. The bridge saves every scene into Home Assistant as a script (`Scene: …`) and each schedule as an automation (`Schedule: …`), so schedules run on the Pi even without internet — edit them in the app, not in Home Assistant.
+- **Cameras:** tap one for its latest picture, *Take a new picture*, recent motion pictures and *Live in Ring*. Building pages show their own devices too.
 - **Door locks:** *Lock* works right away; *Unlock* asks to confirm, expires if the house doesn't act within 30 seconds, and sends a phone alert saying who did it. The **garage door** works the same way (*Open* / *Close*, both confirmed, phone alert each time). Only admins and people with *Can lock/unlock doors and open the garage* see the buttons.
 - **Home devices (admin, under More):** link each Home Assistant area to a building or room, hide clutter, rename devices, and set how often each camera takes a picture.
 - **Backup:** More → Download everything (spreadsheet).
@@ -63,7 +65,7 @@ Open the site → **First time here? Create your password** with your email → 
 |---|---|
 | `index.html`, `app.css`, `js/app.js` | The app |
 | `js/config.js` | Supabase address and key |
-| `supabase/001_setup.sql` … `007_garage.sql` | Database setup — run all, in order, in Supabase |
+| `supabase/001_setup.sql` … `008_scenes.sql` | Database setup — run all, in order, in Supabase |
 | `repository.yaml`, `ha-bridge/` | Home Assistant add-on that connects the house to the app (see `ha-bridge/DOCS.md`) |
 | `manifest.json`, `sw.js`, `icons/` | Home-screen app support |
 | `netlify.toml` | Hosting settings (every page address opens the app) |

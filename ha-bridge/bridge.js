@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.3.1';
+const VERSION = '0.4.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -149,7 +149,10 @@ async function buildCatalog() {
     if (e.disabled_by || e.hidden_by) continue;
     const dev = devById.get(e.device_id);
     const areaId = e.area_id || dev?.area_id;
-    if (!areaId) continue;                       // only devices with an Area are ever sent
+    const domain0 = e.entity_id.split('.')[0];
+    // cameras and sensors only when they have an Area (keeps the Salem Center cameras out);
+    // lights, switches, locks and garage doors always, so every lamp can go in a scene
+    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean'].includes(domain0)) continue;
     const s = stateOf.get(e.entity_id); if (!s) continue;
     const domain = e.entity_id.split('.')[0];
     const dc = s.attributes.device_class || '';
@@ -173,7 +176,7 @@ async function buildCatalog() {
       entity_id: e.entity_id, kind,
       name: s.attributes.friendly_name || e.entity_id,
       device_name: dev ? (dev.name_by_user || dev.name || '') : '',
-      ha_area: areaName.get(areaId) || '',
+      ha_area: areaId ? areaName.get(areaId) || '' : '',
       device_class: dc, unit: s.attributes.unit_of_measurement || '',
       on_battery: batteryDevs.has(e.device_id),
       ...(hasPlatform ? { platform: e.platform || '' } : {}),
@@ -325,8 +328,14 @@ async function pollCommands() {
         const row = catalog.get(c.entity_id), s = settings.get(c.entity_id);
         const maxAge = ['unlock', 'open'].includes(c.action) ? 30e3 : COMMAND_MAX_AGE_MS;   // a late unlock/open is never carried out
         if (Date.now() - Date.parse(c.requested_at) > maxAge) throw new Error('Expired — the house was offline');
-        if (!row || !s?.enabled) throw new Error('Device not available');
-        if (c.action === 'snapshot') {
+        if (c.action.startsWith('scene_')) {
+          await runSceneCommand(c);
+        } else if (c.action.startsWith('bulk_')) {
+          const ids = (c.payload?.entity_ids || []).filter(id => ['switch', 'light'].includes(catalog.get(id)?.kind) && settings.get(id)?.enabled);
+          if (!ids.length) throw new Error('Nothing to switch');
+          await haCall({ type: 'call_service', domain: 'homeassistant', service: c.action === 'bulk_on' ? 'turn_on' : 'turn_off', target: { entity_id: ids } });
+        } else if (!row || !s?.enabled) { throw new Error('Device not available');
+        } else if (c.action === 'snapshot') {
           if (row.kind !== 'camera') throw new Error('Not a camera');
           await takeSnapshot(c.entity_id, 'request');
         } else if (c.action === 'open' || c.action === 'close') {
@@ -339,14 +348,124 @@ async function pollCommands() {
           if (!['switch', 'light'].includes(row.kind)) throw new Error('Not a switch');
           await haCall({ type: 'call_service', domain: c.entity_id.split('.')[0], service: c.action, target: { entity_id: c.entity_id } });
         }
-        log(`Done: ${c.action} ${c.entity_id} (asked by ${c.requested_by})`);
-        // tell Home Assistant who did what (an automation turns lock/unlock into a phone alert)
-        haCall({ type: 'fire_event', event_type: 'mcdonald_home_command',
+        log(`Done: ${c.action} ${c.entity_id || scenes.get(c.scene_id)?.name || c.scene_id || (c.payload?.entity_ids || []).length + ' devices'} (asked by ${c.requested_by})`);
+        // tell Home Assistant who did what (an automation turns lock/unlock/open/close into a phone alert)
+        if (row) haCall({ type: 'fire_event', event_type: 'mcdonald_home_command',
           event_data: { entity_id: c.entity_id, action: c.action, by: c.requested_by, name: row.name } }).catch(() => {});
       } catch (e) { status = 'failed'; result = e.message; log(`Failed: ${c.action} ${c.entity_id} — ${e.message}`); }
       ok(await sb.from('ha_commands').update({ status, result, done_at: new Date().toISOString() }).eq('id', c.id), 'Finishing command');
     }
   } finally { polling = false; }
+}
+
+// ---------------------------------------------------------------- Scenes
+// Scenes live in the app's database. The bridge runs them when someone taps one, and saves each
+// one into Home Assistant as a script (plus an automation for its schedule) so schedules run on
+// the Pi even when the internet is down.
+let scenes = new Map(), scenesHash = '';
+const SYNC_FILE = process.env.SYNC_FILE || '/data/ha_synced.json';
+const SEED_FILE = process.env.SEED_FILE || '/data/scenes_seeded';
+const short = id => String(id).replace(/-/g, '');
+const DAYS = ['sun', 'mon', 'tue', 'wed', 'thu', 'fri', 'sat'];
+
+function sceneSteps(sc, btn, withExtras, by) {
+  const known = (sc.items || []).filter(i => catalog.has(i.entity_id));
+  const steps = [];
+  const on = sc.mode === 'single' ? known.filter(i => (i.target || 'on') === 'on') : btn === 'on' ? known : [];
+  const off = sc.mode === 'single' ? known.filter(i => i.target === 'off') : btn === 'off' ? known : [];
+  if (on.length) steps.push({ action: 'homeassistant.turn_on', target: { entity_id: on.map(i => i.entity_id) } });
+  if (off.length) steps.push({ action: 'homeassistant.turn_off', target: { entity_id: off.map(i => i.entity_id) } });
+  const extrasNow = sc.mode === 'single' || btn === sc.extras_with;
+  if (withExtras && extrasNow) for (const x of sc.extras || []) {
+    if (!catalog.has(x.entity_id)) continue;
+    if (x.action === 'lock') steps.push({ action: 'lock.lock', target: { entity_id: x.entity_id } });
+    else if (x.action === 'close') steps.push({ action: 'cover.close_cover', target: { entity_id: x.entity_id } });
+    else continue;
+    steps.push({ event: 'mcdonald_home_command', event_data: { entity_id: x.entity_id, action: x.action, by, name: catalog.get(x.entity_id)?.name || x.entity_id } });
+  }
+  return steps;
+}
+async function runSceneCommand(c) {
+  const r = await sb.from('ha_scenes').select('*').eq('id', c.scene_id).maybeSingle();
+  if (!r.data) throw new Error('That scene no longer exists');
+  const sc = r.data, btn = c.action.slice(6);
+  const hasDoorSteps = (sc.extras || []).length && (sc.mode === 'single' || btn === sc.extras_with);
+  const steps = sceneSteps(sc, btn, c.allow_doors, `${c.requested_by} (scene ${sc.name})`);
+  for (const st of steps) {
+    if (st.event) await haCall({ type: 'fire_event', event_type: st.event, event_data: st.event_data });
+    else { const [domain, service] = st.action.split('.'); await haCall({ type: 'call_service', domain, service, target: st.target }); }
+  }
+  if (hasDoorSteps && !c.allow_doors) log(`Scene ${sc.name}: door/garage steps skipped (${c.requested_by} isn't allowed to use doors)`);
+}
+
+const haConfig = async (method, kind, id, body) => {
+  const r = await fetch(`${HA_API}/config/${kind}/config/${id}`, { method, signal: AbortSignal.timeout(20e3),
+    headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' }, body: body ? JSON.stringify(body) : undefined });
+  if (!r.ok && !(method === 'DELETE' && r.status === 404)) throw new Error(`Home Assistant answered ${r.status} for ${kind} ${id}`);
+};
+function trigFor(sch) {
+  if (sch.kind === 'time' && /^\d{1,2}:\d{2}$/.test(sch.time || '')) return { trigger: 'time', at: `${sch.time.padStart(5, '0')}:00` };
+  if (sch.kind === 'sunset' || sch.kind === 'sunrise') {
+    const m = Math.round(+sch.offset || 0), a = Math.abs(m);
+    return { trigger: 'sun', event: sch.kind, offset: `${m < 0 ? '-' : ''}${String(Math.floor(a / 60)).padStart(2, '0')}:${String(a % 60).padStart(2, '0')}:00` };
+  }
+  return null;
+}
+let syncWarned = false;
+async function syncScenesToHA() {
+  let prev = { scripts: [], automations: [] };
+  try { prev = JSON.parse(fs.readFileSync(SYNC_FILE, 'utf8')); } catch {}
+  const scripts = [], autos = [];
+  for (const sc of scenes.values()) {
+    for (const btn of sc.mode === 'single' ? ['run'] : ['on', 'off']) {
+      const sid = `mh_scene_${short(sc.id)}_${btn}`;
+      const label = sc.mode === 'single' ? sc.name : `${sc.name} ${btn === 'on' ? 'On' : 'Off'}`;
+      await haConfig('POST', 'script', sid, { alias: `Scene: ${label}`, icon: 'mdi:lightbulb-group', mode: 'single',
+        description: 'Made by the McDonald Home app — edit it in the app, not here.', sequence: sceneSteps(sc, btn, true, `Schedule (scene ${sc.name})`) });
+      scripts.push(sid);
+      const sch = (sc.schedule || {})[btn], trig = sch && trigFor(sch);
+      if (trig) {
+        const aid = `mh_sched_${short(sc.id)}_${btn}`;
+        const days = Array.isArray(sch.days) ? sch.days : [0, 1, 2, 3, 4, 5, 6];
+        await haConfig('POST', 'automation', aid, { id: aid, alias: `Schedule: ${label}`, mode: 'single',
+          description: 'Made by the McDonald Home app — edit it in the app, not here.',
+          triggers: [trig], conditions: days.length && days.length < 7 ? [{ condition: 'time', weekday: days.map(d => DAYS[d]) }] : [],
+          actions: [{ action: 'script.turn_on', target: { entity_id: `script.${sid}` } }] });
+        autos.push(aid);
+      }
+    }
+  }
+  for (const id of prev.scripts.filter(x => !scripts.includes(x))) await haConfig('DELETE', 'script', id);
+  for (const id of prev.automations.filter(x => !autos.includes(x))) await haConfig('DELETE', 'automation', id);
+  fs.writeFileSync(SYNC_FILE, JSON.stringify({ scripts, automations: autos }));
+  log(`Scenes saved to Home Assistant: ${scenes.size} scenes, ${autos.length} schedules`);
+}
+async function loadScenes() {
+  const r = await sb.from('ha_scenes').select('*').order('sort');
+  if (!ok(r, 'Reading scenes')) return;
+  scenes = new Map(r.data.map(x => [x.id, x]));
+  const hash = JSON.stringify(r.data.map(x => [x.id, x.name, x.mode, x.items, x.extras, x.extras_with, x.schedule])) + catalog.size;
+  if (hash === scenesHash || !haReady) return;
+  try { await syncScenesToHA(); scenesHash = hash; syncWarned = false; }
+  catch (e) { if (!syncWarned) log("Couldn't save scenes into Home Assistant (schedules won't run until this works):", e.message); syncWarned = true; }
+}
+// First run: rebuild the Kasa app groups as scenes so there's something to start from
+async function seedScenes() {
+  if (fs.existsSync(SEED_FILE)) return;
+  const r = await sb.from('ha_scenes').select('id').limit(1);
+  if (!ok(r, 'Checking scenes') ) return;
+  if (r.data.length) { fs.writeFileSync(SEED_FILE, 'existing'); return; }
+  const sw = [...catalog.values()].filter(d => ['switch', 'light'].includes(d.kind));
+  const pick = test => sw.filter(test).map(d => ({ entity_id: d.entity_id }));
+  const seeds = [
+    { name: 'Outside', icon: 'sun', items: pick(d => /^(yard lights|cigar lights|porch light|porch string)$/i.test(d.name)) },
+    { name: 'Lamps', icon: 'lamp', items: pick(d => /lamp/i.test(d.name) && !/man ?cave/i.test(d.name + ' ' + d.ha_area)) },
+    { name: 'Man Cave', icon: 'tv', items: pick(d => /man ?cave/i.test(d.name + ' ' + d.ha_area) || /^tp-link_power strip/i.test(d.name)) },
+    { name: 'Bedroom', icon: 'bed', items: pick(d => /^(kelly bed|cherie bed|bedroom mirror lamp|bedroom shelf lamp)$/i.test(d.name) || /circulat/i.test(d.name)) },
+  ].filter(x => x.items.length).map((x, i) => ({ ...x, mode: 'pair', sort: i + 1 }));
+  if (seeds.length && ok(await sb.from('ha_scenes').insert(seeds), 'Creating starter scenes'))
+    log(`Starter scenes created from your Kasa groups: ${seeds.map(x => `${x.name} (${x.items.length})`).join(', ')}`);
+  fs.writeFileSync(SEED_FILE, new Date().toISOString());
 }
 
 // ---------------------------------------------------------------- Monnit (iMonnit Online)
@@ -440,6 +559,8 @@ every(60e3, loadSettings);
 every(60e3, snapshotRound);
 every(3600e3, cleanup);
 every(3600e3, async () => { if (haReady) await buildCatalog(); });
+setTimeout(async () => { try { await seedScenes(); await loadScenes(); } catch (e) { log('Scenes:', e.message); } }, 5000);
+every(30e3, loadScenes);
 if (useMonnit) { monnitRound().catch(e => log('Monnit:', e.message)); every(5 * 60e3, monnitRound); }
 else log('Monnit not set up (add the iMonnit API key ID and secret on the Configuration tab to turn it on)');
 heartbeat().catch(() => {});
