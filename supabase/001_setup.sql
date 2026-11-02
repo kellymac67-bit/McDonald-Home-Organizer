@@ -1,4 +1,4 @@
--- Home Organizer — database setup
+-- Home Organizer — database setup (then also run 002_buildings_levels.sql)
 -- Run once in Supabase: SQL Editor → New query → paste all of this → Run.
 -- Safe to run again (it skips anything that already exists).
 
@@ -30,6 +30,8 @@ create table if not exists public.locations (
   code        text not null unique check (code ~ '^[A-Z0-9-]{2,20}$'),
   name        text not null,
   parent_id   uuid references public.locations(id) on delete set null,
+  kind        text not null default 'shelf' check (kind in ('building', 'room', 'shelf')),
+  levels      int not null default 1 check (levels between 1 and 20),
   notes       text not null default '',
   labeled     boolean not null default false,
   created_by  text default (auth.jwt() ->> 'email'),
@@ -43,6 +45,7 @@ create table if not exists public.boxes (
   title        text not null default '',
   category_id  uuid not null references public.categories(id),
   location_id  uuid references public.locations(id) on delete set null,
+  level        int check (level is null or level >= 1),
   notes        text not null default '',
   labeled      boolean not null default false,
   created_by   text default (auth.jwt() ->> 'email'),
@@ -77,9 +80,16 @@ create table if not exists public.moves (
   box_id         uuid not null references public.boxes(id) on delete cascade,
   from_location  uuid references public.locations(id) on delete set null,
   to_location    uuid references public.locations(id) on delete set null,
+  to_level       int,
   moved_by       text default (auth.jwt() ->> 'email'),
   moved_at       timestamptz not null default now()
 );
+
+-- (for databases created before buildings/levels existed)
+alter table public.locations add column if not exists kind   text not null default 'shelf';
+alter table public.locations add column if not exists levels int  not null default 1;
+alter table public.boxes     add column if not exists level  int;
+alter table public.moves     add column if not exists to_level int;
 
 create index if not exists items_box_idx   on public.items(box_id);
 create index if not exists photos_box_idx  on public.photos(box_id);
@@ -132,9 +142,9 @@ language plpgsql security definer set search_path = public as $$
 begin
   new.updated_at := now();
   new.updated_by := public.my_email();
-  if tg_op = 'UPDATE' and new.location_id is distinct from old.location_id then
-    insert into public.moves(box_id, from_location, to_location, moved_by)
-    values (new.id, old.location_id, new.location_id, public.my_email());
+  if tg_op = 'UPDATE' and (new.location_id is distinct from old.location_id or new.level is distinct from old.level) then
+    insert into public.moves(box_id, from_location, to_location, to_level, moved_by)
+    values (new.id, old.location_id, new.location_id, new.level, public.my_email());
   end if;
   return new;
 end $$;
@@ -147,8 +157,8 @@ create or replace function public.log_first_location() returns trigger
 language plpgsql security definer set search_path = public as $$
 begin
   if new.location_id is not null then
-    insert into moves(box_id, from_location, to_location, moved_by)
-    values (new.id, null, new.location_id, public.my_email());
+    insert into moves(box_id, from_location, to_location, to_level, moved_by)
+    values (new.id, null, new.location_id, new.level, public.my_email());
   end if;
   return new;
 end $$;
@@ -210,9 +220,15 @@ create policy cat_read  on public.categories for select
 create policy cat_write on public.categories for all
   using (public.is_admin()) with check (public.is_admin());
 
--- locations: any member
-create policy loc_all on public.locations for all
-  using (public.is_member()) with check (public.is_member());
+-- locations: any member; buildings only by admins
+create policy loc_read   on public.locations for select using (public.is_member());
+create policy loc_insert on public.locations for insert
+  with check (public.is_member() and (kind <> 'building' or public.is_admin()));
+create policy loc_update on public.locations for update
+  using (public.is_member() and (kind <> 'building' or public.is_admin()))
+  with check (public.is_member() and (kind <> 'building' or public.is_admin()));
+create policy loc_delete on public.locations for delete
+  using (public.is_member() and (kind <> 'building' or public.is_admin()));
 
 -- boxes: any member, but private categories only for those allowed
 create policy box_all on public.boxes for all

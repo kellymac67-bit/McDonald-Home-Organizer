@@ -127,3 +127,12 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .signin .logo{width:72px;height:72px;border-radius:18px}
 .signin h2{margin:0;font-size:26px}
 .otp{font:700 24px var(--mono);letter-spacing:.3em;text-align:center}
+
+/* levels */
+.lvlbtns{display:grid;grid-template-columns:repeat(auto-fill,minmax(56px,1fr));gap:6px}
+.lvlbtn{justify-content:center;min-height:44px;font-size:15px}
+.lvlgrp{border-top:1px solid var(--line);padding-top:8px;margin-top:4px}
+.lvlgrp:first-of-type{border-top:0;margin-top:0}
+.lvlhead{display:flex;justify-content:space-between;align-items:center;font-size:12.5px;font-weight:700;letter-spacing:.05em;text-transform:uppercase;color:var(--brand)}
+.lvlhead a{text-transform:none;letter-spacing:0;font-weight:600}
+#scanLvls:empty{display:none}

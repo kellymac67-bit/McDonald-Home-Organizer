@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.1.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -91,6 +91,15 @@ function descendants(id) {
   return out;
 }
 const boxesIn = ids => S.boxes.filter(b => ids.has(b.location_id));
+const KIND_LABEL = { building: 'Building', room: 'Room', shelf: 'Shelf' };
+const levelsOf = l => (l && l.kind === 'shelf' ? Math.max(1, l.levels || 1) : 1);
+function levelLabel(n, total) { return `Level ${n}${total > 1 && n === total ? ' (top)' : total > 1 && n === 1 ? ' (bottom)' : ''}`; }
+function whereText(b) {
+  if (!b.location_id) return '';
+  const l = ix.loc.get(b.location_id); const t = locText(b.location_id);
+  return levelsOf(l) > 1 && b.level ? `${t} · Level ${b.level}` : t;
+}
+const buildings = () => (ix.kids.get('') || []).filter(l => l.kind === 'building');
 const firstPhoto = b => (ix.photosByBox.get(b.id) || [])[0];
 
 // signed photo URLs, fetched in batches for whatever is on screen
@@ -178,17 +187,30 @@ function boxRow(b, hits = [], toks = []) {
   return `<a class="boxrow" href="/b/${esc(b.code)}">${thumbHtml(firstPhoto(b))}
     <div style="min-width:0"><div class="row" style="gap:6px"><span class="code">${highlight(b.code, toks)}</span>${catPill(c)}</div>
     <div class="t">${highlight(b.title || 'Untitled box', toks)}</div>
-    <div class="s">${b.location_id ? '📍 ' + esc(locText(b.location_id)) : 'No location'} · ${plural(n, 'item')}</div>
+    <div class="s">${b.location_id ? '📍 ' + esc(whereText(b)) : 'No location'} · ${plural(n, 'item')}</div>
     ${hits.length ? `<div class="hits">${hits.slice(0, 4).map(i => highlight(i.name, toks) + (i.qty > 1 ? ` ×${i.qty}` : '')).join(' · ')}${hits.length > 4 ? ` · +${hits.length - 4} more` : ''}</div>` : ''}
     </div></a>`;
 }
-function locOptions(selected = '', exclude = null) {
+function locOptions(selected = '', exclude = null, kinds = null) {
   const ex = exclude ? descendants(exclude) : new Set();
   const out = []; const walk = (pid, depth) => (ix.kids.get(pid) || []).forEach(l => {
-    if (!ex.has(l.id)) out.push(`<option value="${l.id}" ${l.id === selected ? 'selected' : ''}>${'  '.repeat(depth)}${depth ? '└ ' : ''}${esc(l.name)} (${esc(l.code)})</option>`);
-    walk(l.id, depth + 1);
+    if (!ex.has(l.id) && (!kinds || kinds.includes(l.kind))) out.push(`<option value="${l.id}" ${l.id === selected ? 'selected' : ''}>${esc(locText(l.id))}${l.kind === 'shelf' && levelsOf(l) > 1 ? ` (${levelsOf(l)} levels)` : ''}</option>`);
+    if (!ex.has(l.id)) walk(l.id, depth + 1);
   });
   walk('', 0); return out.join('');
+}
+function levelButtons(total, current) {
+  const btns = []; for (let n = total; n >= 1; n--) btns.push(`<button type="button" class="chip lvlbtn" data-lvl="${n}" aria-pressed="${current === n}">${n}${n === total ? ' ▲' : n === 1 ? ' ▼' : ''}</button>`);
+  return `<div class="lvlbtns">${btns.join('')}</div>`;
+}
+function askLevel(l, current = null) {
+  return new Promise(resolve => {
+    const total = levelsOf(l);
+    if (total <= 1) return resolve(null);
+    const s = sheet(`<h3>Which level of ${esc(l.name)}?</h3><p class="small muted" style="margin:0">Level 1 is the bottom, ${total} is the top.</p>${levelButtons(total, current)}<button class="btn" id="lvlCancel">Cancel</button>`);
+    $$('[data-lvl]', s).forEach(b => b.onclick = () => { closeSheet(); resolve(+b.dataset.lvl); });
+    $('#lvlCancel', s).onclick = () => { closeSheet(); resolve(undefined); };
+  });
 }
 function labelCard(kind, rec) {
   const link = kind === 'box' ? boxLink(rec.code) : locLink(rec.code);
@@ -328,7 +350,7 @@ async function viewBox(code) {
   view().innerHTML = `
     <div class="hero"><div class="row"><span class="bigcode">${esc(b.code)}</span><button class="chip" id="catBtn">${c ? `<span class="dot" style="background:${esc(c.color)}"></span>${esc(c.name)}` : 'Category'}</button></div>
       <input class="title" id="title" value="${esc(b.title)}" placeholder="Name this box (e.g. Tree lights)"></div>
-    <div class="where"><div class="grow">${b.location_id ? `<div class="lab">Stored at</div><a href="/loc/${esc(ix.loc.get(b.location_id)?.code)}">📍 ${esc(locText(b.location_id))}</a>` : '<div class="lab">Stored at</div><span class="muted">No location set</span>'}</div>
+    <div class="where"><div class="grow">${b.location_id ? `<div class="lab">Stored at</div><a href="/loc/${esc(ix.loc.get(b.location_id)?.code)}">📍 ${esc(whereText(b))}</a>` : '<div class="lab">Stored at</div><span class="muted">No location set</span>'}</div>
       <button class="btn sm primary" id="moveBtn">Move</button></div>
     <div class="card"><h2>Photos <span class="muted small">${photos.length || ''}</span></h2>${photoGrid(photos, 'boxPhotos')}</div>
     <div class="card"><h2>Contents <span class="row"><span class="muted small">${plural(items.reduce((s, i) => s + i.qty, 0), 'item')}</span><button class="btn sm" id="pasteBtn">Add a list</button></span></h2>
@@ -375,7 +397,7 @@ async function viewBox(code) {
   $('#hist').ontoggle = async e => {
     if (!e.target.open) return;
     const rows = await run(sb.from('moves').select('*').eq('box_id', b.id).order('moved_at', { ascending: false }).limit(30));
-    $('#hist .log').innerHTML = rows.map(m => `<div>${fmtDate(m.moved_at)} — ${m.to_location ? esc(locText(m.to_location) || 'a deleted place') : 'location cleared'}${m.moved_by ? ` <span class="muted">(${esc(memberName(m.moved_by))})</span>` : ''}</div>`).join('') || '<div>No moves recorded.</div>';
+    $('#hist .log').innerHTML = rows.map(m => `<div>${fmtDate(m.moved_at)} — ${m.to_location ? esc(locText(m.to_location) || 'a deleted place') + (m.to_level ? ` · Level ${m.to_level}` : '') : 'location cleared'}${m.moved_by ? ` <span class="muted">(${esc(memberName(m.moved_by))})</span>` : ''}</div>`).join('') || '<div>No moves recorded.</div>';
   };
   $('#delBox').onclick = async () => {
     if (!confirm(`Delete box ${b.code} with its ${plural(items.length, 'item')} and ${plural(photos.length, 'photo')}? This can't be undone.`)) return;
@@ -411,41 +433,55 @@ function editItem(it, b, rerender) {
   };
   $('#eDel', s).onclick = async () => { await run(sb.from('items').delete().eq('id', it.id)); dropLocal('items', it.id); closeSheet(); rerender(); };
 }
-async function moveBox(b, locId) {
-  const row = await run(sb.from('boxes').update({ location_id: locId }).eq('id', b.id).select().single());
+async function moveBox(b, locId, level = null) {
+  const l = ix.loc.get(locId);
+  const row = await run(sb.from('boxes').update({ location_id: locId, level: levelsOf(l) > 1 ? level : null }).eq('id', b.id).select().single());
   putLocal('boxes', row); return row;
 }
 function pickLocation(b) {
   const s = sheet(`<h3>Move ${esc(b.code)} to…</h3>
     <a class="btn primary" href="/scan?box=${encodeURIComponent(b.code)}">Scan the shelf's QR label</a>
-    <input type="search" id="lq" placeholder="Or search places…" autocomplete="off">
+    <input type="search" id="lq" placeholder="Or search shelves and rooms…" autocomplete="off">
     <div class="list" id="ll"></div>
     ${b.location_id ? '<button class="btn" id="clearLoc">Remove location</button>' : ''}
-    <a class="btn" href="/new-place?box=${encodeURIComponent(b.code)}">＋ New place</a>`);
+    <a class="btn" href="/new-place?kind=shelf&box=${encodeURIComponent(b.code)}">＋ New shelf</a>`);
   const draw = () => {
     const t = norm($('#lq', s).value);
-    const locs = S.locations.map(l => ({ l, txt: locText(l.id) })).filter(x => !t || norm(x.txt + ' ' + x.l.code).includes(t)).sort((x, y) => x.txt.localeCompare(y.txt, undefined, { numeric: true }));
-    $('#ll', s).innerHTML = locs.map(x => `<button class="btn" style="justify-content:space-between;border:0;text-align:left" data-l="${x.l.id}"><span>${esc(x.txt)}</span><span class="code muted">${esc(x.l.code)}${x.l.id === b.location_id ? ' ✓' : ''}</span></button>`).join('') || '<p class="muted small">No places yet.</p>';
-    $$('[data-l]', s).forEach(btn => btn.onclick = async () => { await moveBox(b, btn.dataset.l); closeSheet(); toast(`${b.code} → ${locText(btn.dataset.l)}`); render(); });
+    const locs = S.locations.filter(l => l.kind !== 'building' || !(ix.kids.get(l.id) || []).length).map(l => ({ l, txt: locText(l.id) }))
+      .filter(x => !t || norm(x.txt + ' ' + x.l.code).includes(t)).sort((x, y) => x.txt.localeCompare(y.txt, undefined, { numeric: true }));
+    $('#ll', s).innerHTML = locs.map(x => `<button class="btn" style="justify-content:space-between;border:0;text-align:left" data-l="${x.l.id}"><span>${esc(x.txt)}${levelsOf(x.l) > 1 ? ` <span class="muted small">· ${levelsOf(x.l)} levels</span>` : ''}</span><span class="code muted">${esc(x.l.code)}${x.l.id === b.location_id ? ' ✓' : ''}</span></button>`).join('') || '<p class="muted small">No shelves yet.</p>';
+    $$('[data-l]', s).forEach(btn => btn.onclick = async () => {
+      const l = ix.loc.get(btn.dataset.l); const lvl = await askLevel(l, l.id === b.location_id ? b.level : null);
+      if (lvl === undefined) return;
+      await moveBox(b, l.id, lvl); closeSheet(); toast(`${b.code} → ${whereText(ix.box.get(b.id))}`); render();
+    });
   };
   $('#lq', s).oninput = draw; draw();
   const c = $('#clearLoc', s); if (c) c.onclick = async () => { await moveBox(b, null); closeSheet(); render(); };
 }
 
 // ---------- PLACES ----------
+function placeSummary(l) {
+  const all = descendants(l.id); const locs = [...all].filter(id => id !== l.id).map(id => ix.loc.get(id)).filter(Boolean);
+  const rooms = locs.filter(x => x.kind === 'room').length, shelves = locs.filter(x => x.kind === 'shelf').length;
+  const parts = []; if (rooms) parts.push(plural(rooms, 'room')); if (shelves) parts.push(plural(shelves, 'shelf').replace('shelfs', 'shelves'));
+  return { text: parts.join(' · '), boxes: boxesIn(all).length };
+}
+function locRow(l) {
+  const sm = placeSummary(l);
+  return `<a class="locrow" href="/loc/${esc(l.code)}"><div style="min-width:0"><span class="nm">${esc(l.name)}</span> <span class="code muted small">${esc(l.code)}</span>
+    ${l.kind === 'shelf' && levelsOf(l) > 1 ? `<div class="small muted">${levelsOf(l)} levels</div>` : sm.text ? `<div class="small muted">${esc(sm.text)}</div>` : ''}</div><span class="count">${plural(sm.boxes, 'box')}</span></a>`;
+}
 function viewPlaces() {
   header('Places'); tabs('places');
   const unassigned = S.boxes.filter(b => !b.location_id);
-  const rows = []; const walk = (pid, depth) => (ix.kids.get(pid) || []).forEach(l => {
-    const n = boxesIn(descendants(l.id)).length;
-    rows.push(`<a class="locrow" href="/loc/${esc(l.code)}" style="padding-left:${depth * 18}px"><div>${depth ? '<span class="muted">└ </span>' : ''}<span class="nm">${esc(l.name)}</span> <span class="code muted small">${esc(l.code)}</span></div><span class="count">${plural(n, 'box')}</span></a>`);
-    walk(l.id, depth + 1);
-  });
-  walk('', 0);
-  view().innerHTML = `<div class="card" style="padding:4px 14px"><div class="list">${rows.join('') || '<p class="muted">No places yet. Add your garage, attic, shop shelves…</p>'}</div></div>
-    <a class="btn primary" href="/new-place">＋ Add a place</a>
+  const blds = buildings(); const others = (ix.kids.get('') || []).filter(l => l.kind !== 'building');
+  view().innerHTML = `<div class="card" style="padding:10px 14px 4px"><h2>Buildings <span class="count">${blds.length}</span></h2>
+      <div class="list">${blds.map(locRow).join('') || '<p class="muted small">No buildings yet. Run the database update (002) in Supabase.</p>'}</div></div>
+    ${S.me.is_admin ? '<a class="btn" href="/new-place?kind=building">＋ Add a building</a>' : ''}
+    ${others.length ? `<div class="card" style="padding:10px 14px 4px"><h2>Not in a building</h2><div class="list">${others.map(locRow).join('')}</div></div>` : ''}
     ${unassigned.length ? `<div class="card" style="padding:10px 14px 4px"><div class="lab">Boxes with no place (${unassigned.length})</div><div class="list">${unassigned.map(b => boxRow(b)).join('')}</div></div>` : ''}
-    <p class="small muted">Tip: nest places — Garage › Shelf A › Top. Give each shelf its own QR label so you can scan it and see every box stacked there.</p>`;
+    <p class="small muted">Open a building to add rooms (Garage, Loft…) and shelves. Each shelf gets a QR label — scan it to see every box on it, level by level.</p>`;
   hydrate(view());
 }
 async function viewLoc(code) {
@@ -455,59 +491,89 @@ async function viewLoc(code) {
   if (!l) {
     header(code, { backBtn: true });
     if (ix.boxByCode.get(code)) return go(`/b/${code}`, true);
-    view().innerHTML = `<div class="card center"><h2 style="justify-content:center">No place ${esc(code)} yet</h2>
-      <a class="btn primary" href="/new-place?code=${encodeURIComponent(code)}">Create place ${esc(code)}</a></div>`;
+    view().innerHTML = `<div class="card center"><h2 style="justify-content:center">No shelf ${esc(code)} yet</h2>
+      <p class="muted" style="margin:0">This label hasn't been set up yet.</p>
+      <a class="btn primary" href="/new-place?kind=shelf&code=${encodeURIComponent(code)}">Create shelf ${esc(code)}</a></div>`;
     return;
   }
   header(l.name, { backBtn: true });
   const trail = locTrail(l.id);
+  const kind = l.kind || 'shelf';
+  const canEdit = kind !== 'building' || S.me.is_admin;
   const here = S.boxes.filter(b => b.location_id === l.id).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
   const kids = ix.kids.get(l.id) || [];
+  const rooms = kids.filter(k => k.kind === 'room'), shelves = kids.filter(k => k.kind !== 'room' && k.kind !== 'building');
   const photos = ix.photosByLoc.get(l.id) || [];
+  const total = levelsOf(l);
   const rerender = () => viewLoc(l.code);
+  const boxesCard = () => {
+    if (kind !== 'shelf') return here.length ? `<div class="card" style="padding:10px 14px 4px"><h2>Boxes not on a shelf <span class="count">${here.length}</span></h2><div class="list">${here.map(b => boxRow(b)).join('')}</div></div>` : '';
+    if (total <= 1) return `<div class="card" style="padding:10px 14px 4px"><h2>Boxes on this shelf <span class="count">${here.length}</span></h2>
+      <div class="list">${here.map(b => boxRow(b)).join('') || '<p class="muted small">No boxes on this shelf yet.</p>'}</div>
+      <a class="btn sm" style="margin:6px 0 10px" href="/new?loc=${encodeURIComponent(l.code)}">＋ New box here</a></div>`;
+    const groups = []; for (let n = total; n >= 1; n--) groups.push(n);
+    const unset = here.filter(b => !b.level || b.level > total);
+    return `<div class="card" style="padding:10px 14px 4px"><h2>Boxes on this shelf <span class="count">${here.length}</span></h2>
+      ${groups.map(n => { const bs = here.filter(b => b.level === n); return `<div class="lvlgrp"><div class="lvlhead"><span>${levelLabel(n, total)}</span><a class="small" href="/new?loc=${encodeURIComponent(l.code)}&level=${n}">＋ box</a></div>
+        <div class="list">${bs.map(b => boxRow(b)).join('') || '<p class="muted small" style="margin:2px 0 8px">Empty</p>'}</div></div>`; }).join('')}
+      ${unset.length ? `<div class="lvlgrp"><div class="lvlhead"><span>Level not set</span></div><div class="list">${unset.map(b => boxRow(b)).join('')}</div></div>` : ''}</div>`;
+  };
+  const roomsCard = kind === 'building' ? `<div class="card" style="padding:10px 14px 4px"><h2>Rooms <span class="count">${rooms.length}</span></h2>
+      <div class="list">${rooms.map(locRow).join('') || '<p class="muted small" style="margin:4px 0">No rooms. Small buildings can hold shelves directly.</p>'}</div>
+      <a class="btn sm" style="margin:6px 0 10px" href="/new-place?kind=room&parent=${encodeURIComponent(l.code)}">＋ Add a room</a></div>` : '';
+  const shelvesCard = kind !== 'shelf' ? `<div class="card" style="padding:10px 14px 4px"><h2>Shelves${kind === 'building' && rooms.length ? ' not in a room' : ''} <span class="count">${shelves.length}</span></h2>
+      <div class="list">${shelves.map(locRow).join('') || '<p class="muted small" style="margin:4px 0">None yet.</p>'}</div>
+      <a class="btn sm" style="margin:6px 0 10px" href="/new-place?kind=shelf&parent=${encodeURIComponent(l.code)}">＋ Add a shelf</a></div>` : '';
+  const parentKinds = kind === 'shelf' ? ['building', 'room'] : ['building'];
   view().innerHTML = `
     ${trail.length > 1 ? `<div class="crumbs">${trail.slice(0, -1).map(t => `<a href="/loc/${esc(t.code)}">${esc(t.name)}</a>`).join(' › ')} ›</div>` : ''}
-    <div class="hero"><span class="bigcode">${esc(l.code)}</span><input class="title" id="lname" value="${esc(l.name)}"></div>
-    <div class="row"><a class="btn primary grow" href="/scan?to=${encodeURIComponent(l.code)}">Scan boxes into here</a><button class="btn" id="pickBoxes">Pick boxes</button></div>
-    <div class="card" style="padding:10px 14px 4px"><h2>Boxes here <span class="count">${here.length}</span></h2>
-      <div class="list">${here.map(b => boxRow(b)).join('') || '<p class="muted small">No boxes in this spot.</p>'}</div>
-      <a class="btn sm" style="margin:6px 0 10px" href="/new?loc=${encodeURIComponent(l.code)}">＋ New box here</a></div>
-    <div class="card" style="padding:10px 14px 4px"><h2>Places inside</h2>
-      <div class="list">${kids.map(k => `<a class="locrow" href="/loc/${esc(k.code)}"><div><span class="nm">${esc(k.name)}</span> <span class="code muted small">${esc(k.code)}</span></div><span class="count">${plural(boxesIn(descendants(k.id)).length, 'box')}</span></a>`).join('') || '<p class="muted small" style="margin:4px 0">None.</p>'}</div>
-      <a class="btn sm" style="margin:6px 0 10px" href="/new-place?parent=${encodeURIComponent(l.code)}">＋ Add a place inside</a></div>
+    <div class="hero"><div class="row"><span class="bigcode">${esc(l.code)}</span><span class="pill">${KIND_LABEL[kind]}${kind === 'shelf' && total > 1 ? ` · ${total} levels` : ''}</span></div>
+      <input class="title" id="lname" value="${esc(l.name)}" ${canEdit ? '' : 'disabled'}></div>
+    ${kind === 'shelf' ? `<div class="row"><a class="btn primary grow" href="/scan?to=${encodeURIComponent(l.code)}">Scan boxes onto this shelf</a><button class="btn" id="pickBoxes">Pick boxes</button></div>` : ''}
+    ${roomsCard}${shelvesCard}${boxesCard()}
     <div class="card"><h2>Photos</h2>${photoGrid(photos, 'locPhotos')}</div>
-    <div class="card"><h2>Notes</h2><textarea id="lnotes">${esc(l.notes)}</textarea>
-      <label class="f">Inside of<select id="lparent"><option value="">— Top level —</option>${locOptions(l.parent_id || '', l.id)}</select></label></div>
+    <div class="card"><h2>Details</h2>
+      ${kind === 'shelf' ? `<label class="f">Levels on this shelf (1 = bottom)<input id="llevels" type="number" min="1" max="20" inputmode="numeric" value="${total}"></label>` : ''}
+      ${kind !== 'building' ? `<label class="f">Inside of<select id="lparent">${kind === 'shelf' ? '' : ''}${locOptions(l.parent_id || '', l.id, parentKinds)}</select></label>` : ''}
+      <label class="f">Notes<textarea id="lnotes" ${canEdit ? '' : 'disabled'}>${esc(l.notes)}</textarea></label></div>
     ${labelCard('loc', l)}
-    <button class="btn danger" id="delLoc">Delete this place</button>`;
+    ${canEdit ? `<button class="btn danger" id="delLoc">Delete this ${KIND_LABEL[kind].toLowerCase()}</button>` : ''}`;
   const save = async patch => { const row = await run(sb.from('locations').update(patch).eq('id', l.id).select().single()); putLocal('locations', row); };
   $('#lname').onchange = async e => { if (e.target.value.trim()) { await save({ name: e.target.value.trim() }); header(e.target.value.trim(), { backBtn: true }); toast('Saved'); } };
   $('#lnotes').onchange = async e => { await save({ notes: e.target.value }); toast('Saved'); };
-  $('#lparent').onchange = async e => { await save({ parent_id: e.target.value || null }); rerender(); };
+  const lp = $('#lparent'); if (lp) lp.onchange = async e => { await save({ parent_id: e.target.value || null }); rerender(); };
+  const ll = $('#llevels'); if (ll) ll.onchange = async e => {
+    const n = Math.min(20, Math.max(1, parseInt(e.target.value) || 1)); await save({ levels: n }); toast(`${plural(n, 'level')}`); rerender();
+  };
   $('#toggleLabel').onclick = async () => { await save({ labeled: !l.labeled }); rerender(); };
   wireCopy(view());
   wirePhotos(view(), photos, { location_id: l.id }, rerender);
-  $('#pickBoxes').onclick = () => {
-    const s = sheet(`<h3>Move boxes to ${esc(l.name)}</h3><input type="search" id="bq" placeholder="Search boxes…"><div class="list" id="bl"></div><button class="btn primary" id="bGo">Move selected</button>`);
+  const pb = $('#pickBoxes'); if (pb) pb.onclick = () => {
+    let lvl = null;
+    const s = sheet(`<h3>Put boxes on ${esc(l.name)}</h3>
+      ${total > 1 ? `<div class="lab">Level (1 = bottom)</div>${levelButtons(total, null)}` : ''}
+      <input type="search" id="bq" placeholder="Search boxes…"><div class="list" id="bl"></div><button class="btn primary" id="bGo">Move selected</button>`);
+    $$('[data-lvl]', s).forEach(b => b.onclick = () => { lvl = +b.dataset.lvl; $$('[data-lvl]', s).forEach(x => x.setAttribute('aria-pressed', x === b)); });
     const draw = () => {
       const t = norm($('#bq', s).value);
-      $('#bl', s).innerHTML = S.boxes.filter(b => b.location_id !== l.id && (!t || norm(b.code + ' ' + b.title).includes(t)))
+      $('#bl', s).innerHTML = S.boxes.filter(b => !t || norm(b.code + ' ' + b.title).includes(t))
         .sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))
-        .map(b => `<label class="chk" style="padding:8px 0"><input type="checkbox" value="${b.id}"><span><b class="code">${esc(b.code)}</b> ${esc(b.title)} <span class="muted small">${b.location_id ? esc(locText(b.location_id)) : ''}</span></span></label>`).join('') || '<p class="muted small">No other boxes.</p>';
+        .map(b => `<label class="chk" style="padding:8px 0"><input type="checkbox" value="${b.id}"><span><b class="code">${esc(b.code)}</b> ${esc(b.title)} <span class="muted small">${b.location_id ? esc(whereText(b)) : ''}</span></span></label>`).join('') || '<p class="muted small">No boxes.</p>';
     };
     $('#bq', s).oninput = draw; draw();
     $('#bGo', s).onclick = async () => {
       const ids = $$('input:checked', s).map(i => i.value); if (!ids.length) return closeSheet();
-      for (const id of ids) await moveBox(ix.box.get(id), l.id);
-      closeSheet(); toast(`${plural(ids.length, 'box')} moved here`); rerender();
+      if (total > 1 && !lvl) return toast('Tap a level first');
+      for (const id of ids) await moveBox(ix.box.get(id), l.id, lvl);
+      closeSheet(); toast(`${plural(ids.length, 'box')} moved${lvl ? ` to level ${lvl}` : ' here'}`); rerender();
     };
   };
-  $('#delLoc').onclick = async () => {
+  const dl = $('#delLoc'); if (dl) dl.onclick = async () => {
     const n = boxesIn(descendants(l.id)).length;
-    if (!confirm(`Delete ${l.name}?${n ? ` ${plural(n, 'box')} will be left with no place.` : ''}${kids.length ? ' Places inside it move up a level.' : ''}`)) return;
+    if (!confirm(`Delete ${l.name}?${n ? ` ${plural(n, 'box')} will be left with no place.` : ''}${kids.length ? ' What\'s inside it moves up a level.' : ''}`)) return;
     const paths = photos.flatMap(p => [p.path, p.thumb_path]); if (paths.length) await sb.storage.from('photos').remove(paths);
     await run(sb.from('locations').delete().eq('id', l.id));
-    await loadAll(); toast('Place deleted'); go('/places', true);
+    await loadAll(); toast('Deleted'); go(trail.length > 1 ? `/loc/${trail[trail.length - 2].code}` : '/places', true);
   };
   hydrate(view());
 }
@@ -530,9 +596,19 @@ function viewNewBox(params) {
     <label class="f">Box number<input id="nCode" value="${esc(presetCode)}" placeholder="Pick a category first" autocapitalize="characters"></label>
     <label class="f">Name<input id="nTitle" placeholder="e.g. Tree lights, Drill bits, Camera batteries"></label>
     <label class="f">Where it's stored<select id="nLoc"><option value="">— Decide later —</option>${locOptions(presetLoc?.id || '')}</select></label>
+    <div id="nLvlWrap" hidden><div class="lab" style="margin-bottom:6px">Level (1 = bottom)</div><div id="nLvl"></div></div>
     <button class="btn primary" id="nGo">Create box</button></div>
     <p class="small muted">The box number goes on its label. You can add photos and contents on the next screen.</p>`;
   let codeTouched = !!presetCode;
+  let nLevel = parseInt(params.get('level')) || null;
+  const drawLevels = () => {
+    const l = ix.loc.get($('#nLoc').value); const total = levelsOf(l);
+    $('#nLvlWrap').hidden = total <= 1; if (total <= 1) { nLevel = null; return; }
+    if (nLevel > total) nLevel = null;
+    $('#nLvl').innerHTML = levelButtons(total, nLevel);
+    $$('#nLvl [data-lvl]').forEach(b => b.onclick = () => { nLevel = +b.dataset.lvl; drawLevels(); });
+  };
+  $('#nLoc').onchange = () => { nLevel = null; drawLevels(); }; drawLevels();
   $('#nCode').oninput = () => (codeTouched = true);
   $$('[data-cat]').forEach(b => b.onclick = async () => {
     cat = ix.cat.get(b.dataset.cat); $$('[data-cat]').forEach(x => x.setAttribute('aria-pressed', x === b));
@@ -543,59 +619,79 @@ function viewNewBox(params) {
     if (!cat) return toast('Pick a category');
     if (!/^[A-Z0-9-]{2,20}$/.test(code)) return toast('Box number: letters, numbers and dashes only');
     if (ix.boxByCode.has(code) || ix.locByCode.has(code)) return toast(`${code} is already used`);
-    const row = await run(sb.from('boxes').insert({ code, title: $('#nTitle').value.trim(), category_id: cat.id, location_id: $('#nLoc').value || null }).select().single());
+    const locId = $('#nLoc').value || null;
+    if (levelsOf(ix.loc.get(locId)) > 1 && !nLevel) return toast('Tap which level the box is on');
+    const row = await run(sb.from('boxes').insert({ code, title: $('#nTitle').value.trim(), category_id: cat.id, location_id: locId, level: levelsOf(ix.loc.get(locId)) > 1 ? nLevel : null }).select().single());
     putLocal('boxes', row); toast(`${code} created — add photos and contents`);
     go(`/b/${code}`, true);
   };
 }
-const PLACE_NAMES = ['Garage', 'Basement', 'Office', 'Loft', 'Shop Floor', 'Container', 'Chem Shed', 'Pig Shed', 'Gun Shed', 'Barn'];
-function placeNames() {
-  const extra = [...new Set(S.locations.map(l => l.name.trim()))].filter(n => n && !PLACE_NAMES.some(p => norm(p) === norm(n)))
+const ROOM_NAMES = ['Garage', 'Basement', 'Office', 'Craft Room', 'Loft', 'Main Floor'];
+function roomNames() {
+  const extra = [...new Set(S.locations.filter(l => l.kind === 'room').map(l => l.name.trim()))].filter(n => n && !ROOM_NAMES.some(p => norm(p) === norm(n)))
     .sort((x, y) => x.localeCompare(y, undefined, { numeric: true }));
-  return [...PLACE_NAMES, ...extra];
+  return [...ROOM_NAMES, ...extra];
 }
-function suggestCode(name, parent) {
-  const words = cleanCode(name).split('-').filter(Boolean);
-  if (!words.length) return '';
-  let c = words[0].slice(0, 4);
-  if (parent) c = `${parent.code}-${words.length > 1 ? words.map(w => w[0]).join('') : c}`;
-  c = c.slice(0, 17);
-  let out = c, n = 2;
-  while (ix.locByCode.has(out) || ix.boxByCode.has(out)) out = `${c}-${n++}`;
+function uniqueCode(c) {
+  c = cleanCode(c).replace(/-+$/, '').slice(0, 17); if (!c) return '';
+  let out = c, n = 2; while (ix.locByCode.has(out) || ix.boxByCode.has(out)) out = `${c}${n++}`;
   return out;
 }
+function suggestCode(name, parent, kind) {
+  const words = cleanCode(name).split('-').filter(Boolean); if (!words.length) return '';
+  let part;
+  if (kind === 'building') part = words[0].slice(0, 4);
+  else if (kind === 'room') part = words[0].slice(0, 3);
+  else part = words.length > 1 && words[words.length - 1].length <= 2 ? words[words.length - 1] : words.map(w => w[0]).join('');
+  return uniqueCode(parent ? `${parent.code}-${part}` : part);
+}
+function nextShelfName(parent) {
+  const used = new Set((ix.kids.get(parent?.id || '') || []).map(k => norm(k.name)));
+  for (let i = 0; i < 26; i++) { const n = `Shelf ${String.fromCharCode(65 + i)}`; if (!used.has(norm(n))) return n; }
+  return '';
+}
 function viewNewLoc(params) {
-  header('New place', { backBtn: true }); tabs('places');
   const parent = ix.locByCode.get(cleanCode(params.get('parent') || ''));
   const presetCode = cleanCode(params.get('code') || '');
   const forBox = ix.boxByCode.get(cleanCode(params.get('box') || ''));
+  const kind = ['building', 'room', 'shelf'].includes(params.get('kind')) ? params.get('kind') : parent ? (parent.kind === 'building' ? 'room' : 'shelf') : 'building';
+  header(`New ${KIND_LABEL[kind].toLowerCase()}`, { backBtn: true }); tabs('places');
+  if (kind === 'building' && !S.me.is_admin) { view().innerHTML = '<div class="card">Only an admin can add buildings.</div>'; return; }
+  const nameField = kind === 'room'
+    ? `<label class="f">Room<select id="pPick"><option value="">— Choose a room —</option>${roomNames().map(n => `<option>${esc(n)}</option>`).join('')}<option value="__new">＋ Add a new name…</option></select></label>
+       <label class="f" id="pNewWrap" hidden>New room name<input id="pName" placeholder="e.g. Pantry, Mud Room"></label>`
+    : `<label class="f">${kind === 'building' ? 'Building name' : 'Shelf name'}<input id="pName" value="${kind === 'shelf' ? esc(nextShelfName(parent)) : ''}" placeholder="${kind === 'building' ? 'e.g. Well House' : 'e.g. Shelf A, Rack 2'}"></label>`;
+  const parentField = kind === 'building' ? '' : `<label class="f">${kind === 'room' ? 'In building' : 'In'}<select id="pParent"><option value="">— Choose —</option>${locOptions(parent?.id || '', null, kind === 'room' ? ['building'] : ['building', 'room'])}</select></label>`;
   view().innerHTML = `<div class="card">
-    <label class="f">Name<select id="pPick"><option value="">— Choose a place —</option>${placeNames().map(n => `<option>${esc(n)}</option>`).join('')}<option value="__new">＋ Add a new name…</option></select></label>
-    <label class="f" id="pNewWrap" hidden>New name<input id="pName" placeholder="e.g. Attic, Shelf A, Top shelf"></label>
-    <label class="f">Inside of<select id="pParent"><option value="">— Top level —</option>${locOptions(parent?.id || '')}</select></label>
-    <label class="f">Label code<input id="pCode" value="${esc(presetCode)}" placeholder="e.g. GAR" autocapitalize="characters"></label>
-    <div class="small muted">Filled in from the name — change it if you like. Short is best: GAR, GAR-A1 for Garage shelf A.</div>
-    <button class="btn primary" id="pGo">Create place</button></div>
-    <p class="small muted">A new name you add here joins the list for next time.</p>`;
-  let codeTouched = !!presetCode;
-  const nameVal = () => $('#pPick').value === '__new' ? $('#pName').value.trim() : $('#pPick').value;
-  const refreshCode = () => { if (!codeTouched) $('#pCode').value = suggestCode(nameVal(), ix.loc.get($('#pParent').value)); };
+    ${parentField}${nameField}
+    ${kind === 'shelf' ? `<div><div class="lab" style="margin-bottom:6px">Levels on this shelf</div><div class="lvlbtns" id="pLv">${[1, 2, 3, 4, 5, 6].map(n => `<button type="button" class="chip lvlbtn" data-n="${n}" aria-pressed="${n === 1}">${n}</button>`).join('')}</div>
+      <div class="small muted" style="margin-top:6px">Level 1 is the bottom. Choose 1 for a single shelf or a spot on the floor.</div></div>` : ''}
+    <label class="f">Label code<input id="pCode" value="${esc(presetCode)}" autocapitalize="characters"></label>
+    <div class="small muted">Filled in for you — change it if you like.</div>
+    <button class="btn primary" id="pGo">Create ${KIND_LABEL[kind].toLowerCase()}</button></div>`;
+  let codeTouched = !!presetCode, levels = 1;
+  const pick = $('#pPick');
+  const nameVal = () => pick && pick.value !== '__new' ? pick.value : ($('#pName')?.value || '').trim();
+  const parentLoc = () => ix.loc.get($('#pParent')?.value || '');
+  const refresh = () => { if (!codeTouched) $('#pCode').value = suggestCode(nameVal(), parentLoc(), kind); };
   $('#pCode').oninput = () => (codeTouched = true);
-  $('#pPick').onchange = () => {
-    const isNew = $('#pPick').value === '__new'; $('#pNewWrap').hidden = !isNew;
-    if (isNew) $('#pName').focus();
-    refreshCode();
-  };
-  $('#pName').oninput = refreshCode;
-  $('#pParent').onchange = refreshCode;
+  if (pick) pick.onchange = () => { const isNew = pick.value === '__new'; $('#pNewWrap').hidden = !isNew; if (isNew) $('#pName').focus(); refresh(); };
+  const pn = $('#pName'); if (pn) pn.oninput = refresh;
+  const pp = $('#pParent'); if (pp) pp.onchange = () => { if (kind === 'shelf' && pn && /^Shelf [A-Z]$/.test(pn.value)) pn.value = nextShelfName(parentLoc()); refresh(); };
+  $$('#pLv [data-n]').forEach(b => b.onclick = () => { levels = +b.dataset.n; $$('#pLv [data-n]').forEach(x => x.setAttribute('aria-pressed', x === b)); });
+  refresh();
   $('#pGo').onclick = async () => {
-    const name = nameVal(); if (!name) return toast($('#pPick').value === '__new' ? 'Type the new name' : 'Choose a place name');
-    let code = cleanCode($('#pCode').value) || await nextCode('LOC');
+    const name = nameVal(); if (!name) return toast(kind === 'room' ? 'Choose a room' : 'Give it a name');
+    const par = parentLoc(); if (kind !== 'building' && !par) return toast(kind === 'room' ? 'Choose the building' : 'Choose where the shelf is');
+    const code = cleanCode($('#pCode').value) || suggestCode(name, par, kind);
     if (!/^[A-Z0-9-]{2,20}$/.test(code)) return toast('Code: letters, numbers and dashes only');
     if (ix.boxByCode.has(code) || ix.locByCode.has(code)) return toast(`${code} is already used`);
-    const row = await run(sb.from('locations').insert({ name, code, parent_id: $('#pParent').value || null }).select().single());
+    const row = await run(sb.from('locations').insert({ name, code, kind, levels: kind === 'shelf' ? levels : 1, parent_id: par?.id || null }).select().single());
     putLocal('locations', row);
-    if (forBox) { await moveBox(forBox, row.id); toast(`${forBox.code} → ${name}`); return go(`/b/${forBox.code}`, true); }
+    if (forBox && kind === 'shelf') {
+      const lvl = await askLevel(row); await moveBox(forBox, row.id, lvl ?? null);
+      toast(`${forBox.code} → ${whereText(ix.box.get(forBox.id))}`); return go(`/b/${forBox.code}`, true);
+    }
     toast(`${name} created`); go(`/loc/${code}`, true);
   };
 }
@@ -614,10 +710,17 @@ function viewScan(params) {
   tabs('scan');
   let to = ix.locByCode.get(cleanCode(params.get('to') || ''));
   const forBox = ix.boxByCode.get(cleanCode(params.get('box') || ''));
-  header(to ? 'Scan boxes in' : forBox ? `Scan a shelf for ${forBox.code}` : 'Scan a label', { backBtn: !!(to || forBox) });
-  const banner = () => to ? `Putting boxes in <b>${esc(locText(to.id))}</b>. Scan each box label; they move here one after another.`
+  let lvl = parseInt(params.get('level')) || null;
+  header(to ? 'Scan boxes onto shelf' : forBox ? `Scan a shelf for ${forBox.code}` : 'Scan a label', { backBtn: !!(to || forBox) });
+  const banner = () => to ? `Putting boxes on <b>${esc(locText(to.id))}</b>. ${levelsOf(to) > 1 ? 'Tap the level, then scan each box.' : 'Scan each box label; they move here one after another.'}`
     : forBox ? `Scan the shelf where <b>${esc(forBox.code)}</b> is going.` : 'Point at a box or shelf label.';
-  view().innerHTML = `<div class="banner" id="banner">${banner()}</div>
+  const drawLvls = () => {
+    const w = $('#scanLvls'); if (!w) return;
+    if (!to || levelsOf(to) <= 1) { w.innerHTML = ''; return; }
+    w.innerHTML = `<div class="lab" style="margin-bottom:6px">Level (1 = bottom)</div>${levelButtons(levelsOf(to), lvl)}`;
+    $$('[data-lvl]', w).forEach(b => b.onclick = () => { lvl = +b.dataset.lvl; drawLvls(); toast(`Level ${lvl} — scan boxes`); });
+  };
+  view().innerHTML = `<div class="banner" id="banner">${banner()}</div><div id="scanLvls"></div>
     <div class="scanner"><video id="vid" playsinline muted></video><div class="frame"></div></div>
     <div id="camErr" class="card" hidden></div>
     <form class="row" id="manual"><input class="grow" id="mCode" placeholder="Or type a code, e.g. XMAS-07" autocapitalize="characters"><button class="btn">Go</button></form>
@@ -632,20 +735,25 @@ function viewScan(params) {
     try {
       navigator.vibrate?.(60);
       if (to) {
-        if (r.type === 'loc') { to = ix.locByCode.get(r.code); history.replaceState(history.state, '', `/scan?to=${to.code}`); $('#banner').innerHTML = banner(); const d = $('#done'); if (d) d.href = `/loc/${to.code}`; toast(`Now filling ${to.name}`); return; }
+        if (r.type === 'loc') { const nt = ix.locByCode.get(r.code); if (!nt) { toast(`No shelf ${r.code} yet`); return; } to = nt; lvl = null; history.replaceState(history.state, '', `/scan?to=${to.code}`); $('#banner').innerHTML = banner(); drawLvls(); const d = $('#done'); if (d) d.href = `/loc/${to.code}`; toast(`Now filling ${to.name}`); return; }
         const b = ix.boxByCode.get(r.code);
-        if (!b) { toast(`No box ${r.code} yet`); logLine(`⚠️ ${esc(r.code)} isn't set up yet — <a href="/new?code=${esc(r.code)}&loc=${esc(to.code)}">create it</a>`); return; }
-        if (b.location_id === to.id) { toast(`${b.code} is already here`); return; }
-        await moveBox(b, to.id); toast(`✓ ${b.code} moved here`);
-        logLine(`✓ <b class="code">${esc(b.code)}</b> ${esc(b.title)}`);
+        if (!b) { toast(`No box ${r.code} yet`); logLine(`⚠️ ${esc(r.code)} isn't set up yet — <a href="/new?code=${esc(r.code)}&loc=${esc(to.code)}${lvl ? `&level=${lvl}` : ''}">create it</a>`); return; }
+        if (levelsOf(to) > 1 && !lvl) { toast('Tap the level first, then scan the box'); last = ''; return; }
+        const useLvl = levelsOf(to) > 1 ? lvl : null;
+        if (b.location_id === to.id && (b.level ?? null) === useLvl) { toast(`${b.code} is already here`); return; }
+        await moveBox(b, to.id, useLvl); toast(`✓ ${b.code} → ${useLvl ? `level ${useLvl}` : 'here'}`);
+        logLine(`✓ <b class="code">${esc(b.code)}</b> ${esc(b.title)}${useLvl ? ` <span class="muted">· Level ${useLvl}</span>` : ''}`);
       } else if (forBox) {
         if (r.type !== 'loc') { toast('That\'s not a shelf label'); return; }
-        const l = ix.locByCode.get(r.code); await moveBox(forBox, l.id); toast(`${forBox.code} → ${l.name}`); go(`/b/${forBox.code}`, true);
+        const l = ix.locByCode.get(r.code); if (!l) { toast(`No shelf ${r.code} yet`); return; }
+        S.cleanup?.(); const lv = await askLevel(l); if (lv === undefined) { go(`/scan?box=${forBox.code}`, true); return; }
+        await moveBox(forBox, l.id, lv); toast(`${forBox.code} → ${whereText(ix.box.get(forBox.id))}`); go(`/b/${forBox.code}`, true);
       } else {
         go(r.type === 'loc' ? `/loc/${r.code}` : `/b/${r.code}`);
       }
     } finally { busy = false; }
   };
+  drawLvls();
   $('#manual').onsubmit = e => { e.preventDefault(); last = ''; handle($('#mCode').value); $('#mCode').value = ''; };
   S.cleanup = () => { clearTimeout(timer); stream?.getTracks().forEach(t => t.stop()); stream = null; };
   (async () => {
@@ -680,7 +788,7 @@ function viewScan(params) {
 // ---------- MORE / LABELS / CATEGORIES / FAMILY ----------
 function viewMore() {
   header('More'); tabs('more');
-  const unl = S.boxes.filter(b => !b.labeled).length + S.locations.filter(l => !l.labeled).length;
+  const unl = S.boxes.filter(b => !b.labeled).length + S.locations.filter(l => l.kind === 'shelf' && !l.labeled).length;
   view().innerHTML = `<div class="card"><div class="lab">Signed in</div><div><b>${esc(S.me.name || S.me.email)}</b> <span class="muted small">${esc(S.me.email)}</span></div></div>
     <div class="card" style="padding:4px 14px"><div class="list">
       <a class="locrow" href="/labels"><span class="nm">Labels to print</span><span class="count">${unl}</span></a>
@@ -698,7 +806,7 @@ function viewMore() {
     const rows = [['Box', 'Box name', 'Category', 'Place', 'Item', 'Qty', 'Item notes', 'Box notes', 'Link']];
     for (const b of [...S.boxes].sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }))) {
       const its = ix.itemsByBox.get(b.id) || [{ name: '', qty: '', notes: '' }];
-      for (const i of its) rows.push([b.code, b.title, ix.cat.get(b.category_id)?.name, locText(b.location_id), i.name, i.qty, i.notes, b.notes, boxLink(b.code)]);
+      for (const i of its) rows.push([b.code, b.title, ix.cat.get(b.category_id)?.name, whereText(b), i.name, i.qty, i.notes, b.notes, boxLink(b.code)]);
     }
     downloadCsv(`home-organizer-${new Date().toISOString().slice(0, 10)}.csv`, rows);
   };
@@ -714,8 +822,8 @@ function viewLabels(params) {
   header('Labels to print', { backBtn: true }); tabs('more');
   const all = params.get('all') === '1';
   const boxes = S.boxes.filter(b => all || !b.labeled).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
-  const locs = S.locations.filter(l => all || !l.labeled).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
-  const row = (kind, r) => `<div class="locrow" style="grid-template-columns:1fr auto"><div style="min-width:0"><span class="code">${esc(r.code)}</span> ${esc(kind === 'box' ? r.title : r.name)}${r.labeled ? ' <span class="pill">✓ printed</span>' : ''}<div class="small muted" style="word-break:break-all">${esc(kind === 'box' ? boxLink(r.code) : locLink(r.code))}</div></div>
+  const locs = S.locations.filter(l => l.kind === 'shelf' && (all || !l.labeled)).sort((a, b) => a.code.localeCompare(b.code, undefined, { numeric: true }));
+  const row = (kind, r) => `<div class="locrow" style="grid-template-columns:1fr auto"><div style="min-width:0"><span class="code">${esc(r.code)}</span> ${esc(kind === 'box' ? r.title : locText(r.id))}${r.labeled ? ' <span class="pill">✓ printed</span>' : ''}<div class="small muted" style="word-break:break-all">${esc(kind === 'box' ? boxLink(r.code) : locLink(r.code))}</div></div>
     <div class="row" style="flex-wrap:nowrap"><button class="btn sm" data-copy="${esc(kind === 'box' ? boxLink(r.code) : locLink(r.code))}">Copy</button><button class="btn sm" data-done="${kind}:${r.id}">${r.labeled ? 'Undo' : 'Printed'}</button></div></div>`;
   view().innerHTML = `<div class="card"><h2>Printing on the P-touch</h2>
       <p class="small" style="margin:0"><b>One label:</b> Copy the link, then in P-touch Editor choose Insert → QR Code and paste it. Add the code (like XMAS-07) in big text next to it.<br>
@@ -723,11 +831,11 @@ function viewLabels(params) {
       <button class="btn primary" id="csv">Download label file (${boxes.length + locs.length})</button>
       <a class="small" href="/labels${all ? '' : '?all=1'}">${all ? 'Show only labels not yet printed' : 'Show all labels, including printed'}</a></div>
     <div class="card" style="padding:10px 14px 4px"><h2>Boxes <span class="count">${boxes.length}</span></h2><div class="list">${boxes.map(b => row('box', b)).join('') || '<p class="muted small">All box labels printed.</p>'}</div></div>
-    <div class="card" style="padding:10px 14px 4px"><h2>Places <span class="count">${locs.length}</span></h2><div class="list">${locs.map(l => row('loc', l)).join('') || '<p class="muted small">All place labels printed.</p>'}</div></div>
+    <div class="card" style="padding:10px 14px 4px"><h2>Shelves <span class="count">${locs.length}</span></h2><div class="list">${locs.map(l => row('loc', l)).join('') || '<p class="muted small">All shelf labels printed.</p>'}</div></div>
     ${boxes.length + locs.length && !all ? '<button class="btn" id="allDone">Mark all of these as printed</button>' : ''}`;
   wireCopy(view());
   $('#csv').onclick = () => downloadCsv('ptouch-labels.csv', [['Code', 'Name', 'Link'],
-    ...boxes.map(b => [b.code, b.title, boxLink(b.code)]), ...locs.map(l => [l.code, l.name, locLink(l.code)])]);
+    ...boxes.map(b => [b.code, b.title, boxLink(b.code)]), ...locs.map(l => [l.code, locText(l.id), locLink(l.code)])]);
   const mark = async (kind, id, val) => {
     const t = kind === 'box' ? 'boxes' : 'locations';
     const r = await run(sb.from(t).update({ labeled: val }).eq('id', id).select().single()); putLocal(t, r);

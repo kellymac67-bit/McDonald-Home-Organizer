@@ -10,6 +10,7 @@ Web app for finding things in storage boxes at home. Every box and shelf gets a 
 1. Supabase → **SQL Editor** → **New query**.
 2. Paste the whole of `supabase/001_setup.sql` → **Run**. A "destructive operations" warning is normal; the file is safe to run again.
 3. It creates the tables, the access rules, a private `photos` storage bucket, and starting categories. The first person to sign in becomes the admin.
+4. Then run `supabase/002_buildings_levels.sql` the same way. It adds buildings → rooms → shelves, shelf levels, and the building list (House, Shop, Barn, Container, Chem Shed, Pig Shed, Gun Shed, Tree House). Places made before this update are sorted in automatically.
 
 ### 2. Supabase — sign-in
 Nothing to change. Sign-in is email + password. The first time, each person taps **First time here? Create your password**, then taps the link in Supabase's standard confirmation email once. **Forgot password?** emails a reset link.
@@ -30,9 +31,10 @@ Open the site → **First time here? Create your password** with your email → 
 
 ## Day to day
 - **New box:** New box tab → pick category → number fills in (XMAS-07) → name and place → Create → add photos and contents ("Add a list" takes one item per line, `3 extension cords` or `ornaments x 24`).
-- **Places:** nest them (Garage › Shelf A › Top). Codes like `GAR-A1` read well on a label.
-- **Labels:** More → Labels to print. Copy a link into P-touch Editor (Insert → QR Code), or download the label file and use P-touch Editor's *File → Database → Connect* to print a batch (QR = *Link* column, text = *Code* column). Mark them printed.
-- **Moving boxes:** open a shelf → *Scan boxes into here* → scan box after box. Or on a box → Move.
+- **Places:** Buildings (fixed list; only an admin adds one) → Rooms (optional: Garage, Basement, Office, Craft Room, Loft, Main Floor, or add your own) → Shelves. Small buildings can hold shelves directly. Codes build up: House › Garage › Shelf A = `HSE-GAR-A`.
+- **Shelf levels:** each shelf has 1–20 levels, **1 = bottom**. The shelf gets one QR label; scanning it shows boxes level by level, top first. A box's place reads *House › Garage › Shelf A · Level 2*.
+- **Labels:** shelves and boxes get labels. More → Labels to print. Copy a link into P-touch Editor (Insert → QR Code), or download the label file and use P-touch Editor's *File → Database → Connect* to print a batch (QR = *Link* column, text = *Code* column). Mark them printed.
+- **Moving boxes:** open a shelf → *Scan boxes onto this shelf* → tap the level → scan box after box (tap another level any time). Or on a box → Move → pick the shelf → pick the level.
 - **Pre-printed labels:** scanning a code that isn't set up yet offers to create that box.
 - **Private category:** "Secure storage" (STOR) is hidden from family members unless they're allowed to see private categories (More → Family members).
 - **Backup:** More → Download everything (spreadsheet).
@@ -47,6 +49,6 @@ Open the site → **First time here? Create your password** with your email → 
 |---|---|
 | `index.html`, `app.css`, `js/app.js` | The app |
 | `js/config.js` | Supabase address and key |
-| `supabase/001_setup.sql` | Database setup (run once in Supabase) |
+| `supabase/001_setup.sql`, `002_buildings_levels.sql` | Database setup — run both, in order, in Supabase |
 | `manifest.json`, `sw.js`, `icons/` | Home-screen app support |
 | `netlify.toml` | Hosting settings (every page address opens the app) |
