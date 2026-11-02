@@ -1,0 +1,20 @@
+[build]
+  publish = "."
+
+# Every page address (/b/XMAS-07, /loc/GAR-A1, /places …) opens the app
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+[[headers]]
+  for = "/sw.js"
+  [headers.values]
+    Cache-Control = "no-cache"
+
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Permissions-Policy = "camera=(self)"
+    X-Content-Type-Options = "nosniff"
+    Referrer-Policy = "same-origin"
