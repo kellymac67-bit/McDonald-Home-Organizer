@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.5.1';
+const VERSION = '0.6.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -21,7 +21,7 @@ const MOTION_SNAPSHOT_GAP_MS = 5 * 60 * 1000;
 const SENSOR_CLASSES = new Set(['temperature', 'humidity', 'moisture', 'illuminance', 'pressure',
   'wind_speed', 'precipitation', 'precipitation_intensity', 'irradiance', 'atmospheric_pressure']);   // incl. weather station
 const BINARY_CLASSES = new Set(['door', 'window', 'opening', 'garage_door', 'moisture', 'motion', 'smoke', 'gas',
-  'cold', 'heat', 'problem', 'safety', 'lock', 'occupancy', 'presence', 'vibration', 'tamper']);
+  'cold', 'heat', 'problem', 'safety', 'lock', 'occupancy', 'presence', 'vibration', 'tamper', 'plug', 'battery_charging']);
 const KEEP_ATTRS = ['unit_of_measurement', 'device_class', 'friendly_name', 'brightness', 'battery_level', 'current_position',
   // thermostats
   'current_temperature', 'temperature', 'target_temp_low', 'target_temp_high', 'hvac_action', 'hvac_modes', 'preset_mode', 'preset_modes',
@@ -168,12 +168,13 @@ async function buildCatalog() {
          || (domain === 'sensor' && dc === 'timestamp' && /_last_activity$/.test(e.entity_id))))
       mOf.set(e.entity_id, e.device_id);
 
-    if (e.entity_category) continue;              // skip settings / diagnostics
+    if (e.entity_category && e.platform !== 'tesla_wall_connector') continue;   // skip settings / diagnostics (the Wall Connector's plug sensor is one)
     let kind = null;
     if (['camera', 'switch', 'light', 'lock', 'cover', 'climate'].includes(domain)) kind = domain;
     else if (e.platform === 'ambient_station' && (domain === 'sensor' || domain === 'binary_sensor')) kind = domain;   // every weather reading
     else if (domain === 'input_boolean' || domain === 'fan') kind = 'switch';   // on/off helpers ("Boiler alerts") and fans (Dreo)
     else if (domain === 'sensor' && SENSOR_CLASSES.has(dc)) kind = 'sensor';
+    else if (domain === 'sensor' && e.platform === 'tesla_wall_connector' && ['energy', 'power'].includes(dc)) kind = 'sensor';   // overnight charge
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
     if (!kind) continue;
 
@@ -603,6 +604,65 @@ async function cleanup() {
   log(`Removed ${r.data.length} snapshots older than ${opts.keep_snapshot_days} days`);
 }
 
+// ---------------------------------------------------------------- Routines
+// "Heading out" / "Home for the night": when the Tesla is unplugged or plugged in (Wall Connector), the phone
+// gets an alert that opens the checklist in the app. Saved into Home Assistant as automations.
+const ROUTINE_FILE = process.env.ROUTINE_FILE || '/data/routines.json';
+const APP_URL = String(opts.app_url || 'https://mcdonald-home-organizer.netlify.app').replace(/\/$/, '');
+let routinesHash = '', routinesWarned = false;
+function wallConnectorPlug() {
+  return [...catalog.values()].find(r => r.kind === 'binary_sensor' && r.platform === 'tesla_wall_connector' && r.device_class === 'plug')?.entity_id
+    || [...catalog.values()].find(r => r.kind === 'binary_sensor' && r.device_class === 'plug' && /tesla|wall connector|vehicle/i.test(r.entity_id + ' ' + r.name))?.entity_id;
+}
+async function loadRoutines() {
+  const r = await sb.from('ha_routines').select('*').order('sort');
+  if (r.error) { if (!routinesWarned && !/ha_routines/.test(r.error.message)) log('Reading routines:', r.error.message); routinesWarned = true; return; }
+  if (!haReady) return;
+  const plug = wallConnectorPlug();
+  const covers = [...catalog.values()].filter(x => x.kind === 'cover' && settings.get(x.entity_id)?.enabled).map(x => x.entity_id);
+  const hash = JSON.stringify([r.data, plug, covers, notifyTargets()]);
+  if (hash === routinesHash) return;
+  let prev = [];
+  try { prev = JSON.parse(fs.readFileSync(ROUTINE_FILE, 'utf8')); } catch {}
+  const made = [];
+  for (const rt of r.data) {
+    const trig = rt.trigger_entity || plug;
+    if (!rt.enabled || !trig) continue;
+    const aid = `mh_routine_${short(rt.id)}`, url = `${APP_URL}/routine/${rt.id}`;
+    const items = (rt.items || []).slice(0, 4).join(', ');
+    const actions = notifyTargets().map(t => ({ action: `notify.${t}`, data: { title: rt.name, message: `Tap for your checklist${items ? ` — ${items}${(rt.items || []).length > 4 ? '…' : ''}` : ''}`,
+      data: { clickAction: url, url, tag: aid, priority: 'high', ttl: 0, channel: 'Routines' } } }));
+    if (rt.garage_nag && covers.length) actions.push(
+      { delay: '00:05:00' },
+      { condition: 'state', entity_id: covers, state: 'open', match: 'any' },
+      ...notifyTargets().map(t => ({ action: `notify.${t}`, data: { title: '🚗 Garage is still open', message: `It's been 5 minutes since you unplugged.`,
+        data: { tag: 'mh_garage_open', priority: 'high', ttl: 0, channel: 'Home alerts', clickAction: `${APP_URL}/`, url: `${APP_URL}/`,
+          actions: [{ action: 'MH_CLOSE_GARAGE', title: 'Close garage' }] } } })));
+    const [sh, sm] = String(rt.start_time).split(':'), [eh, em] = String(rt.end_time).split(':');
+    const conditions = [{ condition: 'time', after: `${sh}:${sm}:00`, before: `${eh}:${em}:59` }];
+    if (Array.isArray(rt.days) && rt.days.length && rt.days.length < 7) conditions[0].weekday = rt.days.map(d => DAYS[d]);
+    await haConfig('POST', 'automation', aid, { id: aid, alias: `Routine: ${rt.name}`, mode: 'single',
+      description: 'Made by the McDonald Home app — change it in the app (More > Routines), not here.',
+      triggers: [{ trigger: 'state', entity_id: trig, from: rt.trigger_to === 'on' ? 'off' : 'on', to: rt.trigger_to }],
+      conditions, actions });
+    made.push(aid);
+  }
+  // the "Close garage" button on the garage alert
+  if (covers.length) {
+    const aid = 'mh_close_garage_from_alert';
+    await haConfig('POST', 'automation', aid, { id: aid, alias: 'Close garage from phone alert', mode: 'single',
+      description: 'Made by the McDonald Home app — the Close garage button on the "Garage is still open" alert.',
+      triggers: [{ trigger: 'event', event_type: 'mobile_app_notification_action', event_data: { action: 'MH_CLOSE_GARAGE' } }],
+      conditions: [], actions: [{ action: 'cover.close_cover', target: { entity_id: covers } },
+        ...covers.map(c => ({ event: 'mcdonald_home_command', event_data: { entity_id: c, action: 'close', by: 'the phone alert', name: catalog.get(c)?.name || c } }))] });
+    made.push(aid);
+  }
+  for (const id of prev.filter(x => !made.includes(x))) await haConfig('DELETE', 'automation', id);
+  fs.writeFileSync(ROUTINE_FILE, JSON.stringify(made));
+  routinesHash = hash;
+  log(`Routines saved: ${r.data.filter(x => x.enabled).map(x => x.name).join(', ') || 'none'}${plug ? '' : ' (no Tesla Wall Connector found yet — add it in Home Assistant with an Area)'}`);
+}
+
 const every = (ms, fn) => setInterval(() => fn().catch(e => log(e.message)), ms);
 
 // ---------------------------------------------------------------- Start
@@ -619,6 +679,8 @@ every(3600e3, cleanup);
 every(3600e3, async () => { if (haReady) await buildCatalog(); });
 setTimeout(async () => { try { await seedScenes(); await loadScenes(); } catch (e) { log('Scenes:', e.message); } }, 5000);
 every(30e3, loadScenes);
+every(30e3, loadRoutines);
+setTimeout(() => loadRoutines().catch(e => log('Routines:', e.message)), 8000);
 if (useMonnit) { monnitRound().catch(e => log('Monnit:', e.message)); every(5 * 60e3, monnitRound); }
 else log('Monnit not set up (add the iMonnit API key ID and secret on the Configuration tab to turn it on)');
 heartbeat().catch(() => {});

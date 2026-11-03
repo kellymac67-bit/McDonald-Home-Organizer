@@ -222,3 +222,15 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .tq.big .btn{width:56px;height:48px;font-size:24px;padding:0}.tq.big b{font-size:34px}
 .tnow{display:flex;align-items:center;gap:14px}
 .tset{display:flex;flex-direction:column;align-items:center;gap:6px}
+
+/* routines */
+.rtick{display:flex;align-items:center;gap:12px;width:100%;background:none;border:0;border-bottom:1px solid var(--line);padding:12px 0;font:inherit;font-size:17px;color:inherit;text-align:left;cursor:pointer}
+.rtick:last-child{border-bottom:0}
+.rtick .box{width:28px;height:28px;border:2px solid var(--line);border-radius:8px;display:grid;place-items:center;font-weight:800;flex:none}
+.rtick.done .box{background:var(--brand);border-color:var(--brand);color:var(--brand-fg)}
+.rtick.done .grow{color:var(--muted);text-decoration:line-through}
+.rcheck{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.rcheck:last-child{border-bottom:0}
+.rcheck .ic{font-size:22px;width:28px;text-align:center}
+.rcheck.warn .small{color:#a35a00;font-weight:600}
+.rst{font-size:18px}

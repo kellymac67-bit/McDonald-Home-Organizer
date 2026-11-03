@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.3.1';
+const VERSION = '2.4.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -173,6 +173,7 @@ const routes = [
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
+  [/^\/routines$/, viewRoutines], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -322,12 +323,14 @@ const canCams = () => !!(S.me?.is_admin || S.me?.see_cameras);
 const canControl = () => !!(S.me?.is_admin || S.me?.can_control);
 const canUnlock = () => !!(S.me?.is_admin || S.me?.can_unlock);
 async function loadDevices() {
-  const [d, st, al, sc] = await Promise.all([
+  const [d, st, al, sc, rt] = await Promise.all([
     sb.from('ha_devices').select('*').order('name'),
     sb.from('ha_bridge_status').select('*').eq('id', 1).maybeSingle(),
     sb.from('ha_area_links').select('*'),
     sb.from('ha_scenes').select('*').order('sort'),
+    sb.from('ha_routines').select('*').order('sort'),
   ]);
+  S.routines = rt.error ? [] : rt.data;
   S.scenes = sc.error ? [] : sc.data;
   S.devices = d.error ? [] : d.data.map(applyThermoHold);
   S.bridge = st.error ? null : st.data;
@@ -928,6 +931,163 @@ function wireScenes(root, redraw) {
   });
 }
 
+// ---- Routines (checklists when the Tesla is unplugged / plugged in) ----
+const CHECKS = [['boiler', 'Boiler'], ['door', 'Front door'], ['garage', 'Garage'], ['lights', 'Lights'], ['thermostat', 'Thermostat'],
+  ['chickens', 'Chickens'], ['weather', 'Weather'], ['charge', 'Tesla charge']];
+const routineById = id => (S.routines || []).find(r => r.id === id);
+const todayKey = () => new Date().toLocaleDateString('en-CA');
+function ticks(rt) { try { return JSON.parse(localStorage.getItem(`rt:${rt.id}:${todayKey()}`) || '[]'); } catch { return []; } }
+function setTicks(rt, list) { try { localStorage.setItem(`rt:${rt.id}:${todayKey()}`, JSON.stringify(list)); } catch {} }
+const findDev = (test, kinds) => shownDevices().filter(d => (!kinds || kinds.includes(d.kind)) && test(`${devName(d)} ${d.name} ${d.ha_area} ${d.entity_id}`.toLowerCase(), d));
+const fmt12 = t => { const [h, m] = String(t || '').split(':').map(Number); if (isNaN(h)) return ''; return `${h % 12 || 12}${m ? ':' + String(m).padStart(2, '0') : ''} ${h < 12 ? 'am' : 'pm'}`; };
+// one live line per automatic check: { icon, title, text, st: ok | warn | info }
+function routineCheck(key, rt) {
+  const leaving = rt.button === 'leave';
+  const off = d => !d.state || d.state === 'unavailable' || d.state === 'unknown';
+  if (key === 'boiler') {
+    const b = findDev(t => /boiler/.test(t), ['sensor']).find(d => d.device_class === 'temperature') || findDev(t => /boiler/.test(t), ['sensor'])[0];
+    if (!b) return null;
+    const n = parseFloat(b.state);
+    return { icon: '🔥', title: 'Boiler', text: off(b) ? 'No reading' : `${devValue(b).text}${b.last_changed ? ` · updated ${relTime(b.last_changed)}` : ''}${n < 170 ? ' — getting low' : ''}`, st: !isNaN(n) && n < 170 ? 'warn' : 'info' };
+  }
+  if (key === 'door') {
+    const L = shownDevices().filter(d => d.kind === 'lock');
+    if (!L.length) return null;
+    const open = L.filter(d => d.state !== 'locked');
+    return { icon: open.length ? '🔓' : '🔒', title: L.length > 1 ? 'Doors' : devName(L[0]), text: open.length ? open.map(d => L.length > 1 ? `${devName(d)}: ${devValue(d).text}` : devValue(d).text).join(' · ') : 'Locked', st: open.length ? 'warn' : 'ok' };
+  }
+  if (key === 'garage') {
+    const G = shownDevices().filter(d => d.kind === 'cover');
+    if (!G.length) return null;
+    const open = G.filter(d => d.state !== 'closed');
+    return { icon: '🚗', title: G.length > 1 ? 'Garage doors' : devName(G[0]), text: open.length ? `${open.map(d => devValue(d).text).join(', ')}${leaving ? ' — it should close once you pull out' : ''}` : 'Closed', st: open.length ? 'warn' : 'ok', btn: open.length && canUnlock() ? `<button class="btn sm" data-rclose="${esc(open[0].entity_id)}">Close</button>` : '' };
+  }
+  if (key === 'lights') {
+    const on = shownDevices().filter(d => d.kind === 'light' || (d.kind === 'switch' && !/alert|heat|boiler|fan|circulat/i.test(devName(d)) && d.entity_id.startsWith('switch.') || d.kind === 'light')).filter(d => d.state === 'on');
+    const uniq = [...new Map(on.map(d => [d.entity_id, d])).values()];
+    return { icon: '💡', title: 'Lights', text: uniq.length ? `${uniq.length} on: ${uniq.slice(0, 4).map(devName).join(', ')}${uniq.length > 4 ? '…' : ''}` : 'All off', st: uniq.length && leaving ? 'warn' : uniq.length ? 'info' : 'ok' };
+  }
+  if (key === 'thermostat') {
+    const T = shownDevices().filter(d => d.kind === 'climate');
+    if (!T.length) return null;
+    const t = T[0];
+    return { icon: '🌡️', title: devName(t), text: thermoText(t).text + (isEco(t) ? ' · Eco on' : ''), st: leaving ? (isEco(t) || t.state === 'off' ? 'ok' : 'info') : (isEco(t) ? 'warn' : 'ok') };
+  }
+  if (key === 'chickens') {
+    const temp = findDev(t => /coop|chicken/.test(t), ['sensor']).find(d => d.device_class === 'temperature');
+    const heat = findDev(t => /chicken|coop/.test(t) && /heat|lamp/.test(t), ['switch', 'light'])[0];
+    if (!temp && !heat) return null;
+    const n = temp ? parseFloat(temp.state) : NaN;
+    return { icon: '🐔', title: 'Chickens', text: [temp ? `Coop ${devValue(temp).text}` : '', heat ? `heat ${heat.state === 'on' ? 'on' : 'off'}` : ''].filter(Boolean).join(' · '), st: !isNaN(n) && n < 35 && heat?.state !== 'on' ? 'warn' : 'ok' };
+  }
+  if (key === 'weather') {
+    const ot = outdoorTemp(); if (!ot) return null;
+    const n = parseFloat(ot.state);
+    const rain = weatherDevices().find(d => /rain|precip/i.test(devName(d)) && /rate|hourly|event/i.test(devName(d)) && parseFloat(d.state) > 0);
+    const tips = [n <= 34 ? 'freezing — check the chickens\' water' : n < 50 ? 'take a jacket' : '', rain ? 'raining now' : ''].filter(Boolean);
+    return { icon: n <= 34 ? '🥶' : rain ? '🌧️' : '⛅', title: 'Weather', text: `${devValue(ot).text} outside${tips.length ? ' — ' + tips.join(', ') : ''}`, st: n <= 34 ? 'warn' : 'info' };
+  }
+  if (key === 'charge') {
+    const W = shownDevices().filter(d => d.platform === 'tesla_wall_connector');
+    if (!W.length) return null;
+    const plug = W.find(d => d.device_class === 'plug'), kwh = W.find(d => d.device_class === 'energy' && /session/i.test(devName(d))) || W.find(d => d.device_class === 'energy');
+    return { icon: '⚡', title: 'Tesla', text: [plug ? (plug.state === 'on' ? 'Plugged in' : 'Unplugged') : '', kwh && !off(kwh) ? `charged ${devValue(kwh).text} this session` : ''].filter(Boolean).join(' · '), st: 'info' };
+  }
+  return null;
+}
+function viewRoutines() {
+  header('Routines', { backBtn: true }); tabs('more');
+  const plug = shownDevices().find(d => d.platform === 'tesla_wall_connector' && d.device_class === 'plug');
+  view().innerHTML = `<div class="card small">${plug ? `⚡ Tesla Wall Connector: <b>${plug.state === 'on' ? 'plugged in' : 'unplugged'}</b>` : '⚡ The Tesla Wall Connector isn\'t in the app yet. Add it in Home Assistant (Settings → Devices &amp; services → Tesla Wall Connector) and give it the Area <b>Garage</b>.'}</div>
+    <div class="card" style="padding:4px 14px"><div class="list">${(S.routines || []).map(r => `<div class="locrow"><a href="/routine/${r.id}" class="grow" style="color:inherit;text-decoration:none"><div class="nm">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}${r.enabled ? '' : ' <span class="muted small">(off)</span>'}</div>
+      <div class="small muted">When the Tesla is ${r.trigger_to === 'off' ? 'unplugged' : 'plugged in'} · ${fmt12(r.start_time)}–${fmt12(r.end_time)}${(r.days || []).length < 7 ? ' · ' + (r.days || []).map(d => DAY_LETTERS[d]).join('') : ''}</div></a>
+      ${S.me.is_admin ? `<a class="btn sm" href="/routine/${r.id}/edit">Edit</a>` : ''}</div>`).join('') || '<p class="muted small">No routines yet. Run supabase/012_routines.sql in Supabase.</p>'}</div></div>
+    ${S.me.is_admin ? '<a class="btn" href="/routine/new/edit">＋ New routine</a>' : ''}`;
+}
+function viewRoutine(id) {
+  const rt = routineById(id);
+  if (!rt) { header('Routine', { backBtn: true }); tabs('home'); view().innerHTML = '<div class="card">That routine isn\'t here. <a href="/routines">See all routines</a></div>'; return; }
+  header(rt.name, { backBtn: true, right: S.me.is_admin ? `<a class="hdr-link" href="/routine/${rt.id}/edit">Edit</a>` : '' }); tabs('home');
+  view().innerHTML = '<div id="rv" style="display:flex;flex-direction:column;gap:14px"></div>';
+  const draw = () => {
+    const el = $('#rv'); if (!el) return;
+    const t = ticks(rt), items = rt.items || [];
+    const checks = (rt.checks || []).map(k => routineCheck(k, rt)).filter(Boolean);
+    const done = items.filter(x => t.includes(x)).length;
+    el.innerHTML = `${items.length ? `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Don't forget</div><span class="small muted">${done} of ${items.length}</span></div>
+        <div class="card" style="padding:2px 14px"><div class="list">${items.map((x, i) => `<button class="rtick ${t.includes(x) ? 'done' : ''}" data-tick="${i}"><span class="box">${t.includes(x) ? '✓' : ''}</span><span class="grow">${esc(x)}</span></button>`).join('')}</div></div></section>` : ''}
+      ${checks.length ? `<section class="hsec"><div class="lab">Around the house</div><div class="card" style="padding:2px 14px"><div class="list">${checks.map(c => `<div class="rcheck ${c.st}"><span class="ic">${c.icon}</span><div class="grow" style="min-width:0"><div class="nm">${esc(c.title)}</div><div class="small">${esc(c.text)}</div></div>${c.btn || `<span class="rst">${c.st === 'ok' ? '✅' : c.st === 'warn' ? '⚠️' : ''}</span>`}</div>`).join('')}</div></div></section>` : ''}
+      ${rt.button === 'leave' ? `<button class="btn primary" id="rgo">Leaving now — lock up, lights off, thermostat to Eco</button>` : rt.button === 'home' ? `<button class="btn primary" id="rgo">I'm home — thermostat out of Eco</button>` : ''}
+      ${done === items.length && items.length ? '<p class="center small muted" style="margin:0">All set. Drive safe! 🚗</p>' : ''}`;
+    $$('[data-tick]', el).forEach(b => b.onclick = () => { const x = items[+b.dataset.tick]; const cur = ticks(rt); setTicks(rt, cur.includes(x) ? cur.filter(y => y !== x) : [...cur, x]); draw(); });
+    $$('[data-rclose]', el).forEach(b => b.onclick = async () => { const d = S.devices.find(x => x.entity_id === b.dataset.rclose); b.disabled = true; b.textContent = 'Closing…'; if (await sendCommand(d, 'close')) toast(`${devName(d)} closing`); await sleep(4000); await loadDevices().catch(() => {}); draw(); });
+    const gb = $('#rgo');
+    if (gb) gb.onclick = async () => {
+      gb.disabled = true; const did = [];
+      if (rt.button === 'leave') {
+        if (canUnlock()) for (const d of shownDevices().filter(d => d.kind === 'lock' && d.state === 'unlocked')) if (await sendCommand(d, 'lock')) did.push(`${devName(d)} locked`);
+        const on = shownDevices().filter(d => d.kind === 'light' && d.state === 'on' || (d.kind === 'switch' && d.state === 'on' && (S.scenes || []).some(sc => (sc.items || []).some(i => i.entity_id === d.entity_id))));
+        if (canControl() && on.length && await sendRaw({ action: 'bulk_off', payload: { entity_ids: on.map(d => d.entity_id) } })) did.push(`${on.length} lights off`);
+        for (const t of shownDevices().filter(d => d.kind === 'climate' && !isEco(d) && d.state !== 'off')) {
+          const eco = (t.attributes?.preset_modes || []).find(p => /eco/i.test(p));
+          if (canControl() && eco && await sendRaw({ entity_id: t.entity_id, action: 'climate_set', payload: { preset_mode: eco } })) did.push('thermostat on Eco');
+        }
+      } else {
+        for (const t of shownDevices().filter(d => d.kind === 'climate' && isEco(d)))
+          if (canControl() && await sendRaw({ entity_id: t.entity_id, action: 'climate_set', payload: { preset_mode: 'none' } })) did.push('thermostat back to normal');
+      }
+      toast(did.length ? did.join(' · ') : 'Everything was already set', 4000);
+      await sleep(2500); await loadDevices().catch(() => {}); draw();
+    };
+  };
+  draw();
+  S.cleanup = pollDevices(draw, 8000);
+  loadDevices().then(draw).catch(() => {});
+}
+function viewRoutineEdit(id) {
+  if (!S.me.is_admin) { header('Routine', { backBtn: true }); view().innerHTML = '<div class="card">Only an admin can change routines.</div>'; return; }
+  const isNew = id === 'new';
+  const rt = isNew ? { name: '', icon: 'car', trigger_to: 'off', start_time: '05:00', end_time: '10:00', days: [0, 1, 2, 3, 4, 5, 6], items: [], checks: CHECKS.map(c => c[0]), button: 'leave', garage_nag: false, enabled: true, sort: (S.routines || []).length }
+    : structuredClone(routineById(id) || {});
+  if (!isNew && !rt.id) return go('/routines', true);
+  header(isNew ? 'New routine' : 'Edit routine', { backBtn: true }); tabs('more');
+  const plugs = shownDevices().filter(d => d.kind === 'binary_sensor' && d.device_class === 'plug');
+  const hm = t => String(t || '').slice(0, 5);
+  view().innerHTML = `<div class="card">
+      <label class="lab" for="rn">Name</label><input id="rn" value="${esc(rt.name)}" maxlength="60" placeholder="Heading out">
+      <label class="lab">Pops up when the Tesla is</label>
+      <div class="chips"><button class="chip" data-tt="off" aria-pressed="${rt.trigger_to === 'off'}">Unplugged</button><button class="chip" data-tt="on" aria-pressed="${rt.trigger_to === 'on'}">Plugged in</button></div>
+      ${plugs.length > 1 ? `<select id="rte"><option value="">Tesla Wall Connector</option>${plugs.map(d => `<option value="${esc(d.entity_id)}" ${rt.trigger_entity === d.entity_id ? 'selected' : ''}>${esc(devName(d))}</option>`).join('')}</select>` : ''}
+      <label class="lab">Only between</label>
+      <div class="row" style="gap:8px;flex-wrap:nowrap"><input type="time" id="rs" value="${hm(rt.start_time)}"><span>and</span><input type="time" id="re" value="${hm(rt.end_time)}"></div>
+      <div class="chips" id="rdays">${DAY_LETTERS.map((l, i) => `<button class="chip day" data-day="${i}" aria-pressed="${(rt.days || []).includes(i)}">${l}</button>`).join('')}</div>
+      <label class="lab" for="ri">Things to tick off (one per line)</label><textarea id="ri" rows="6">${esc((rt.items || []).join('\n'))}</textarea>
+      <label class="lab">Show these automatically</label>
+      <div class="chips" style="flex-wrap:wrap">${CHECKS.map(([k, l]) => `<button class="chip" data-ck="${k}" aria-pressed="${(rt.checks || []).includes(k)}">${l}</button>`).join('')}</div>
+      <label class="lab">Button at the bottom</label>
+      <div class="chips" style="flex-wrap:wrap"><button class="chip" data-bt="leave" aria-pressed="${rt.button === 'leave'}">Leaving now</button><button class="chip" data-bt="home" aria-pressed="${rt.button === 'home'}">I'm home</button><button class="chip" data-bt="" aria-pressed="${!rt.button}">None</button></div>
+      <label class="chk"><input type="checkbox" id="rg" ${rt.garage_nag ? 'checked' : ''}> Alert me if the garage is still open 5 minutes later</label>
+      <label class="chk"><input type="checkbox" id="ren" ${rt.enabled ? 'checked' : ''}> On</label>
+      <button class="btn primary" id="rsave">Save</button>
+      ${isNew ? '' : '<button class="btn danger" id="rdel">Delete routine</button>'}</div>`;
+  const pick = (sel, attr, set) => $$(sel).forEach(b => b.onclick = () => { set(b.dataset[attr]); $$(sel).forEach(x => x.setAttribute('aria-pressed', String(x === b))); });
+  pick('[data-tt]', 'tt', v => rt.trigger_to = v);
+  pick('[data-bt]', 'bt', v => rt.button = v || null);
+  $$('[data-day]').forEach(b => b.onclick = () => { const d = +b.dataset.day, s = new Set(rt.days || []); s.has(d) ? s.delete(d) : s.add(d); if (!s.size) return toast('Pick at least one day'); rt.days = [...s].sort(); b.setAttribute('aria-pressed', String(s.has(d))); });
+  $$('[data-ck]').forEach(b => b.onclick = () => { const k = b.dataset.ck, s = new Set(rt.checks || []); s.has(k) ? s.delete(k) : s.add(k); rt.checks = CHECKS.map(c => c[0]).filter(c => s.has(c)); b.setAttribute('aria-pressed', String(s.has(k))); });
+  $('#rsave').onclick = async () => {
+    const row = { name: $('#rn').value.trim(), icon: rt.trigger_to === 'on' ? 'moon' : 'car', trigger_to: rt.trigger_to, trigger_entity: $('#rte')?.value || rt.trigger_entity || null,
+      start_time: $('#rs').value || '00:00', end_time: $('#re').value || '23:59', days: rt.days, items: $('#ri').value.split('\n').map(x => x.trim()).filter(Boolean).slice(0, 30),
+      checks: rt.checks, button: rt.button || null, garage_nag: $('#rg').checked, enabled: $('#ren').checked, sort: rt.sort ?? 0, updated_at: new Date().toISOString() };
+    if (!row.name) return toast('Give it a name');
+    const saved = await run(isNew ? sb.from('ha_routines').insert(row).select().single() : sb.from('ha_routines').update(row).eq('id', rt.id).select().single());
+    S.routines = [...(S.routines || []).filter(x => x.id !== saved.id), saved].sort((a, b) => a.sort - b.sort);
+    toast(`${saved.name} saved — Home Assistant picks it up within a minute`, 3500); go('/routines', true);
+  };
+  const del = $('#rdel');
+  if (del) del.onclick = async () => { if (!confirm(`Delete ${rt.name}?`)) return; await run(sb.from('ha_routines').delete().eq('id', rt.id)); S.routines = S.routines.filter(x => x.id !== rt.id); toast('Deleted'); go('/routines', true); };
+}
+
 // ---- Home ----
 function doorTile(d) {
   const v = devValue(d);
@@ -958,6 +1118,7 @@ function viewHomeDash() {
     const p = prefs();
     const parts = [statusLine()];
     const al = homeAlerts();
+    if ((S.routines || []).some(r => r.enabled)) parts.push(`<div class="chips" style="flex-wrap:wrap">${S.routines.filter(r => r.enabled).map(r => `<a class="chip" href="/routine/${r.id}">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}</a>`).join('')}</div>`);
     if (al.length) parts.push(al.map(a => `<div class="alert"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/></svg><div class="grow"><b>${esc(a.text)}</b>${a.sub ? `<br><span class="small">${esc(a.sub)}</span>` : ''}</div>${a.btn || ''}</div>`).join(''));
     for (const s of p.sections.filter(s => s.show)) {
       if (s.key === 'doors') {
@@ -1737,6 +1898,7 @@ function viewMore() {
       <a class="locrow" href="/categories"><span class="nm">Categories</span><span class="count">${S.categories.length}</span></a>
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
+      <a class="locrow" href="/routines"><span class="nm">Routines (Tesla checklists)</span><span class="count">${(S.routines || []).length}</span></a>
       ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
       <a class="locrow" href="#" id="exp"><span class="nm">Download everything (spreadsheet)</span><span class="muted">CSV</span></a>
     </div></div>

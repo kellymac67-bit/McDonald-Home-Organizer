@@ -90,3 +90,10 @@ The Nest thermostat reaches Home Assistant through the Google Nest integration. 
 3. The thermostat shows at the top of **At a glance** on Home. Use − and ＋ to change the set temperature, or tap the thermostat for the mode (Heat, Cool, Heat·Cool, Off) and Eco. Changing it requires *Can control*.
 - **Too cold / too hot phone alerts:** run `supabase/011_thermostat_alerts.sql` and update the bridge to 0.5.1. Both alerts start at 60° and 78°. An admin changes them by tapping the thermostat and using **Phone alerts**. The bridge saves them in Home Assistant as the automation "Alert: … too cold / too hot", and it fires after 10 minutes past the limit. The phone the alerts go to is the bridge option `alert_notify`; several can be listed, separated by commas.
 - **Emergency heat:** Google doesn't allow it from other apps, so the button opens the Google Home app.
+
+## Routines (Tesla checklists)
+When the Tesla is unplugged in the morning or plugged in at night (seen by the Tesla Wall Connector), your phone gets an alert. Tapping it opens a checklist with items you tick off and live checks of the house.
+1. In Home Assistant, add **Tesla Wall Connector** under Devices & services and give it the Area **Garage**.
+2. Run `supabase/012_routines.sql`. It creates two routines, "Heading out" (unplugged, 5–10 am) and "Home for the night" (plugged in, 3 pm–midnight).
+3. Update the bridge to 0.6.0. It saves each routine into Home Assistant as an automation named "Routine: …".
+4. To change the items, times, days and checks, go to More → Routines → Edit (admins only).
