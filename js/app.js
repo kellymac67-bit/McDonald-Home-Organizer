@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.4.0';
+const VERSION = '2.4.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1165,7 +1165,11 @@ function viewLights() {
     const sc = sortedScenes();
     el.innerHTML = `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Scenes</div>${canControl() ? '<a class="small" href="/scene/new">＋ New scene</a>' : ''}</div>
         ${sc.length ? `<div class="card" style="padding:4px 14px">${sc.map(sceneRow).join('')}</div>` : '<div class="card small muted">No scenes yet.</div>'}
-        ${canControl() && onIds.length ? `<button class="btn" data-bulk="off" data-ids="${onIds.join(',')}">Turn off every light (${onIds.length})</button>` : ''}</section>
+        </section>
+      ${onIds.length ? `<section class="hsec"><div class="lab">On now <span class="count">${onIds.length}</span></div>
+        <div class="card" style="padding:2px 14px"><div class="list">${all.filter(d => d.state === 'on').sort((x, y) => devName(x).localeCompare(devName(y))).map(d => devRow(d, true)).join('')}</div></div>
+        ${canControl() ? `<button class="btn" data-bulk="off" data-ids="${onIds.join(',')}">Turn off every light (${onIds.length})</button>` : ''}</section>`
+        : '<div class="card small muted">All lights are off.</div>'}
       ${groupByPlace(all).map(([place, list]) => {
         const on = list.filter(d => d.state === 'on').map(d => d.entity_id), offl = list.filter(d => d.state === 'off').map(d => d.entity_id);
         const bulk = !canControl() ? '' : on.length ? `<button class="btn sm" data-bulk="off" data-ids="${on.join(',')}">All off</button>` : offl.length > 1 ? `<button class="btn sm" data-bulk="on" data-ids="${offl.join(',')}">All on</button>` : '';
