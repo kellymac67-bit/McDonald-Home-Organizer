@@ -88,3 +88,5 @@ The Nest thermostat reaches Home Assistant through the Google Nest integration. 
 1. Run `supabase/010_thermostat.sql` before updating the bridge to 0.5.0. Until it's run, the bridge leaves the thermostat out.
 2. Update the McDonald Home Bridge app in Home Assistant to 0.5.0.
 3. The thermostat shows at the top of **At a glance** on Home. Use − and ＋ to change the set temperature, or tap the thermostat for the mode (Heat, Cool, Heat·Cool, Off) and Eco. Changing it requires *Can control*.
+- **Too cold / too hot phone alerts:** run `supabase/011_thermostat_alerts.sql` and update the bridge to 0.5.1. Both alerts start at 60° and 78°. An admin changes them by tapping the thermostat and using **Phone alerts**. The bridge saves them in Home Assistant as the automation "Alert: … too cold / too hot", and it fires after 10 minutes past the limit. The phone the alerts go to is the bridge option `alert_notify`; several can be listed, separated by commas.
+- **Emergency heat:** Google doesn't allow it from other apps, so the button opens the Google Home app.

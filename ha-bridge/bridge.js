@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.5.0';
+const VERSION = '0.5.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -230,9 +230,51 @@ async function buildCatalog() {
       `${n('sensor') + n('binary_sensor')} sensors${n('climate') ? `, ${n('climate')} thermostat` : ''}). Added ${fresh.length}, removed ${gone.length}.`);
 }
 
+let hasAlerts = true;
 async function loadSettings() {
-  const r = await sb.from('ha_devices').select('entity_id, enabled, snapshot_minutes');
+  let r = hasAlerts ? await sb.from('ha_devices').select('entity_id, enabled, snapshot_minutes, alert_low, alert_high') : null;
+  if (!r || r.error) { if (r?.error && /alert_/.test(r.error.message)) hasAlerts = false; r = await sb.from('ha_devices').select('entity_id, enabled, snapshot_minutes'); }
   if (ok(r, 'Reading device settings')) settings = new Map(r.data.map(d => [d.entity_id, d]));
+  if (haReady) await syncTempAlerts().catch(e => log("Couldn't save thermostat alerts into Home Assistant:", e.message));
+}
+
+// ---------------------------------------------------------------- Thermostat alerts
+// Too cold / too hot → phone alert. Saved into Home Assistant as one automation per thermostat.
+const ALERT_FILE = process.env.ALERT_FILE || '/data/temp_alerts.json';
+const notifyTargets = () => String(opts.alert_notify || 'mobile_app_km_s24_ultra').split(',').map(x => x.trim().replace(/^notify\./, '')).filter(Boolean);
+let alertsHash = '';
+async function syncTempAlerts() {
+  const want = [...catalog.values()].filter(r => r.kind === 'climate' && settings.get(r.entity_id)?.enabled)
+    .map(r => ({ r, lo: settings.get(r.entity_id)?.alert_low, hi: settings.get(r.entity_id)?.alert_high }))
+    .filter(x => x.lo != null || x.hi != null);
+  const hash = JSON.stringify([want.map(x => [x.r.entity_id, x.r.name, x.lo, x.hi]), notifyTargets()]);
+  if (hash === alertsHash) return;
+  let prev = [];
+  try { prev = JSON.parse(fs.readFileSync(ALERT_FILE, 'utf8')); } catch {}
+  const made = [];
+  for (const { r, lo, hi } of want) {
+    const aid = `mh_temp_alert_${r.entity_id.split('.')[1]}`, name = r.name.replace(/ thermostat$/i, '') || 'House';
+    const triggers = [], choose = [];
+    const send = (title, message) => notifyTargets().map(t => ({ action: `notify.${t}`, data: { title, message,
+      data: { tag: aid, priority: 'high', ttl: 0, channel: 'Home alerts' } } }));
+    const now = `{{ state_attr('${r.entity_id}', 'current_temperature') | round(0) }}°`;
+    if (lo != null) {
+      triggers.push({ trigger: 'numeric_state', entity_id: r.entity_id, attribute: 'current_temperature', below: Number(lo), for: '00:10:00', id: 'cold' });
+      choose.push({ conditions: [{ condition: 'trigger', id: 'cold' }], sequence: send('🥶 House is too cold', `${name} reads ${now} — below your ${lo}° alert. Check the heat.`) });
+    }
+    if (hi != null) {
+      triggers.push({ trigger: 'numeric_state', entity_id: r.entity_id, attribute: 'current_temperature', above: Number(hi), for: '00:10:00', id: 'hot' });
+      choose.push({ conditions: [{ condition: 'trigger', id: 'hot' }], sequence: send('🥵 House is too hot', `${name} reads ${now} — above your ${hi}° alert.`) });
+    }
+    await haConfig('POST', 'automation', aid, { id: aid, alias: `Alert: ${r.name} too cold / too hot`, mode: 'single',
+      description: 'Made by the McDonald Home app — change the temperatures in the app (tap the thermostat > Alerts), not here.',
+      triggers, conditions: [], actions: [{ choose }] });
+    made.push(aid);
+  }
+  for (const id of prev.filter(x => !made.includes(x))) await haConfig('DELETE', 'automation', id);
+  fs.writeFileSync(ALERT_FILE, JSON.stringify(made));
+  alertsHash = hash;
+  if (want.length) log(`Thermostat alerts saved: ${want.map(x => `${x.r.name} below ${x.lo ?? '–'}° / above ${x.hi ?? '–'}°`).join(', ')} → ${notifyTargets().join(', ')}`);
 }
 
 // ---------------------------------------------------------------- State changes → app

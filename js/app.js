@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.3.0';
+const VERSION = '2.3.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -562,6 +562,15 @@ function openThermostat(d, redraw) {
       <div class="chips" style="flex-wrap:wrap">${modes.map(m => `<button class="chip" aria-pressed="${cur.state === m}" data-mode="${m}" ${can ? '' : 'disabled'}>${MODE_TEXT[m]}</button>`).join('')}
         ${ecoOk ? `<button class="chip" aria-pressed="${isEco(cur)}" data-eco ${can && cur.state !== 'off' ? '' : 'disabled'}>🍃 Eco</button>` : ''}</div>
       ${canControl() ? '' : '<p class="small muted" style="margin:0">Ask an admin to turn on <b>Can control</b> to change the thermostat.</p>'}
+      <a class="btn" href="https://home.google.com/" target="_blank" rel="noopener">🔥 Emergency heat — open Google Home</a>
+      <p class="small muted" style="margin:-4px 0 0">Google doesn't let other apps turn on emergency heat, so it opens the Google Home app. Tap the thermostat there, then Mode.</p>
+      ${'alert_low' in cur ? `<div class="lab">Phone alerts</div>
+      <div class="card" style="gap:8px;padding:10px 14px">
+        ${[['alert_low', '🥶 Too cold below'], ['alert_high', '🥵 Too hot above']].map(([k, label]) => `<div class="row" style="justify-content:space-between;flex-wrap:nowrap">
+          <span>${label}</span>${S.me.is_admin
+            ? `<span class="tq"><button class="btn sm" data-al="${k}" data-dir="-1" aria-label="${label} lower">−</button><b>${cur[k] == null ? 'Off' : esc(tdeg(cur[k]))}</b><button class="btn sm" data-al="${k}" data-dir="1" aria-label="${label} higher">＋</button></span>`
+            : `<b>${cur[k] == null ? 'Off' : esc(tdeg(cur[k]))}</b>`}</div>`).join('')}
+        <span class="small muted">A phone alert comes if it stays there 10 minutes.${S.me.is_admin ? '' : ' Only an admin can change these.'}</span></div>` : ''}
       <button class="btn" id="thDone">Done</button>`;
     $$('[data-nudge]', s).forEach(b => b.onclick = () => thermoNudge(cur, +b.dataset.dir, () => { draw(); redraw?.(); }, b.dataset.nudge));
     $$('[data-mode]', s).forEach(b => b.onclick = async () => {
@@ -580,6 +589,19 @@ function openThermostat(d, redraw) {
       await thermoSend(cur, { preset_mode: want }, `Eco ${want === 'none' ? 'off' : 'on'}`); if ($('#th')) draw(); redraw?.();
     };
     $('#thDone', s).onclick = closeSheet;
+    let alT;
+    $$('[data-al]', s).forEach(b => b.onclick = () => {
+      const k = b.dataset.al, other = k === 'alert_low' ? cur.alert_high : cur.alert_low;
+      const base = cur[k] ?? (k === 'alert_low' ? 60 : 78);
+      let v = Math.round(+base + +b.dataset.dir);
+      v = k === 'alert_low' ? Math.max(30, Math.min(v, (other ?? 110) - 2)) : Math.min(110, Math.max(v, (other ?? 30) + 2));
+      cur[k] = v; draw();
+      clearTimeout(alT);
+      alT = setTimeout(async () => {
+        try { await run(sb.from('ha_devices').update({ alert_low: cur.alert_low, alert_high: cur.alert_high }).eq('entity_id', cur.entity_id)); toast(`Alerts: below ${tdeg(cur.alert_low)} · above ${tdeg(cur.alert_high)}`); }
+        catch { await loadDevices().catch(() => {}); if ($('#th')) draw(); }
+      }, 1000);
+    });
   };
   draw();
 }
