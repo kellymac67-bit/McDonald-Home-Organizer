@@ -82,3 +82,9 @@ Live video for the home Ring cameras goes through the Supabase Edge Function `ri
    - Webhook: `…/functions/v1/ring/webhook`
    - Account Link: `https://mcdonald-home-organizer.netlify.app/ring-link.html`
 4. Allow the app from the Ring app. More → Home devices → Ring live view should then show the connected cameras, and each Ring camera gets a ▶ Live button.
+
+## Thermostat (Google Nest)
+The Nest thermostat reaches Home Assistant through the Google Nest integration. That setup uses the Google Cloud project HA-Google-Home and a Device Access project ($5, one time). Its Pub/Sub topic is set in the Device Access Console.
+1. Run `supabase/010_thermostat.sql` before updating the bridge to 0.5.0. Until it's run, the bridge leaves the thermostat out.
+2. Update the McDonald Home Bridge app in Home Assistant to 0.5.0.
+3. The thermostat shows at the top of **At a glance** on Home. Use − and ＋ to change the set temperature, or tap the thermostat for the mode (Heat, Cool, Heat·Cool, Off) and Eco. Changing it requires *Can control*.

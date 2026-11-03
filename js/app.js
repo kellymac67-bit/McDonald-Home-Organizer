@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.2.0';
+const VERSION = '2.3.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -329,7 +329,7 @@ async function loadDevices() {
     sb.from('ha_scenes').select('*').order('sort'),
   ]);
   S.scenes = sc.error ? [] : sc.data;
-  S.devices = d.error ? [] : d.data;
+  S.devices = d.error ? [] : d.data.map(applyThermoHold);
   S.bridge = st.error ? null : st.data;
   S.areaLinks = al.error ? [] : al.data;
   S.devicesAt = Date.now();
@@ -347,7 +347,7 @@ function relTime(t) {
 const devName = d => d.display_name || d.name.replace(/\s+live view$/i, '').trim() || d.entity_id;
 // name without the device's own name in front ("Tallman WS Wind Speed" → "Wind Speed")
 const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
-const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉' };
+const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉', climate: '🌡️' };
 function devIcon(d) {
   if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
   if (d.kind === 'binary_sensor') return { moisture: '💧', door: '🚪', window: '🪟', garage_door: '🚗', opening: '🚪', motion: '🏃', smoke: '🔥', gas: '⚠️' }[d.device_class] || '◉';
@@ -378,6 +378,7 @@ function devValue(d) {
   }
   if (d.kind === 'lock') return { text: { locked: 'Locked', unlocked: 'Unlocked', locking: 'Locking…', unlocking: 'Unlocking…', jammed: 'JAMMED', open: 'Open' }[st] || st,
     cls: st === 'jammed' ? 'alarm' : st === 'unlocked' || st === 'open' ? 'on' : '' };
+  if (d.kind === 'climate') return thermoText(d);
   if (d.kind === 'cover') return { text: { open: 'Open', closed: 'Closed', opening: 'Opening…', closing: 'Closing…' }[st] || st[0].toUpperCase() + st.slice(1), cls: st === 'open' || st === 'opening' ? 'on' : '' };
   return { text: st };
 }
@@ -406,10 +407,13 @@ function devRow(d, showRoom) {
   } else if (d.kind === 'cover' && canUnlock() && ['open', 'closed'].includes(d.state)) {
     const v = devValue(d), act = d.state === 'closed' ? 'open' : 'close';
     right = `<span class="row" style="gap:6px;flex-wrap:nowrap"><span class="val ${v.cls || ''}">${esc(v.text)}</span><button class="btn sm ${act === 'close' ? 'primary' : ''}" data-cover="${esc(d.entity_id)}" data-act="${act}">${act === 'open' ? 'Open' : 'Close'}</button></span>`;
+  } else if (d.kind === 'climate' && d.state !== 'unavailable') {
+    const v = devValue(d);
+    right = `<span class="row" style="gap:6px;flex-wrap:nowrap"><span class="val ${v.cls || ''}">${esc(v.text)}</span><button class="btn sm" data-thermo="${esc(d.entity_id)}">${canControl() ? 'Adjust' : 'View'}</button></span>`;
   } else { const v = devValue(d); right = `<span class="val ${v.cls || ''}">${esc(v.text)}</span>`; }
   return `<div class="devrow"><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}</div>`;
 }
-const KIND_ORDER = { lock: 0, cover: 0, switch: 1, light: 1, binary_sensor: 3, sensor: 4 };
+const KIND_ORDER = { climate: 0, lock: 0, cover: 0, switch: 1, light: 1, binary_sensor: 3, sensor: 4 };
 function devicesBlock(list, { showRoom = true } = {}) {
   const cams = list.filter(d => d.kind === 'camera' && canCams());
   const rest = list.filter(d => d.kind !== 'camera').sort((a, b) => (KIND_ORDER[a.kind] || 9) - (KIND_ORDER[b.kind] || 9) || devName(a).localeCompare(devName(b)));
@@ -417,6 +421,11 @@ function devicesBlock(list, { showRoom = true } = {}) {
     ${rest.length ? `<div class="list">${rest.map(d => devRow(d, showRoom)).join('')}</div>` : ''}`;
 }
 function wireDevices(root, redraw) {
+  $$('[data-thermo]', root).forEach(b => b.onclick = () => openThermostat(S.devices.find(d => d.entity_id === b.dataset.thermo), redraw));
+  $$('[data-tq]', root).forEach(b => b.onclick = () => {
+    const d = S.devices.find(x => x.entity_id === b.dataset.tq); if (!d) return;
+    thermoNudge(d, +b.dataset.dir, redraw);
+  });
   $$('[data-cam]', root).forEach(b => b.onclick = () => openCamera(S.devices.find(d => d.entity_id === b.dataset.cam), redraw));
   $$('[data-tgl]', root).forEach(b => b.onclick = async () => {
     const d = S.devices.find(x => x.entity_id === b.dataset.tgl); if (!d || b.classList.contains('busy')) return;
@@ -456,6 +465,123 @@ function wireDevices(root, redraw) {
     };
   });
   hydrate(root);
+}
+// ---------- Thermostat (Nest via Home Assistant) ----------
+const MODE_TEXT = { off: 'Off', heat: 'Heat', cool: 'Cool', heat_cool: 'Heat·Cool', auto: 'Auto', fan_only: 'Fan', dry: 'Dry' };
+const ACTION_TEXT = { heating: 'Heating', cooling: 'Cooling', idle: 'Idle', off: 'Off', fan: 'Fan', drying: 'Drying' };
+const tnum = v => v == null || v === '' || isNaN(+v) ? null : +v;
+const tdeg = v => tnum(v) == null ? '–' : `${Math.round(+v)}°`;
+const isEco = d => /eco/i.test(d.attributes?.preset_mode || '');
+function thermoTarget(d) {
+  const a = d.attributes || {};
+  if (d.state === 'off') return 'Off';
+  if (isEco(d)) return 'Eco';
+  if (tnum(a.target_temp_low) != null && tnum(a.target_temp_high) != null && d.state === 'heat_cool') return `${tdeg(a.target_temp_low)}–${tdeg(a.target_temp_high)}`;
+  return tnum(a.temperature) != null ? tdeg(a.temperature) : MODE_TEXT[d.state] || d.state;
+}
+function thermoText(d) {
+  if (!d.state || d.state === 'unavailable' || d.state === 'unknown') return { text: 'Offline', cls: 'off' };
+  const a = d.attributes || {}, act = a.hvac_action;
+  const doing = act && act !== 'idle' && act !== 'off' ? ACTION_TEXT[act] || act : '';
+  return { text: `${tdeg(a.current_temperature)} inside · ${doing ? `${doing} to ${thermoTarget(d)}` : d.state === 'off' ? 'Off' : `set ${thermoTarget(d)}`}`, cls: act === 'heating' || act === 'cooling' ? 'on' : '' };
+}
+function thermoTile(d) {
+  const a = d.attributes || {}, act = a.hvac_action;
+  const single = ['heat', 'cool'].includes(d.state) && !isEco(d) && tnum(a.temperature) != null && canControl();
+  const doing = d.state === 'off' ? 'Off' : act && act !== 'idle' ? `${ACTION_TEXT[act] || act} to ${thermoTarget(d)}` : `${MODE_TEXT[d.state] || d.state} · set ${thermoTarget(d)}`;
+  return `<div class="card ttile ${act === 'heating' ? 'heat' : act === 'cooling' ? 'cool' : ''}">
+    <button class="tmain" data-thermo="${esc(d.entity_id)}"><span class="tbig">${esc(tdeg(a.current_temperature))}</span>
+      <span class="grow" style="min-width:0;text-align:left"><b>${esc(devName(d))}</b><br><span class="small">${esc(d.state === 'unavailable' ? 'Offline' : doing)}${tnum(a.current_humidity) != null ? ` · ${Math.round(a.current_humidity)}% humidity` : ''}</span></span></button>
+    ${single ? `<div class="tq"><button class="btn sm" data-tq="${esc(d.entity_id)}" data-dir="-1" aria-label="Cooler">−</button><b>${esc(tdeg(a.temperature))}</b><button class="btn sm" data-tq="${esc(d.entity_id)}" data-dir="1" aria-label="Warmer">＋</button></div>` : ''}</div>`;
+}
+// What someone just picked stays on screen until the thermostat reports it (or 30 s pass).
+const thermoHold = new Map();
+function holdThermo(d, patch) {
+  const h = thermoHold.get(d.entity_id) || { attrs: {} };
+  if (patch.state) { h.state = patch.state; d.state = patch.state; }
+  if (patch.attrs) { Object.assign(h.attrs, patch.attrs); d.attributes = { ...(d.attributes || {}), ...patch.attrs }; }
+  h.until = Date.now() + 30000; thermoHold.set(d.entity_id, h);
+}
+function applyThermoHold(x) {
+  const h = x.kind === 'climate' && thermoHold.get(x.entity_id);
+  if (!h) return x;
+  const a = x.attributes || {};
+  const same = (!h.state || x.state === h.state) && Object.entries(h.attrs).every(([k, v]) => String(a[k]) === String(v));
+  if (same || h.until < Date.now()) { thermoHold.delete(x.entity_id); return x; }
+  return { ...x, state: h.state || x.state, attributes: { ...a, ...h.attrs } };
+}
+// Taps on − / ＋ are gathered for a moment, then sent as one change.
+const thermoQueue = new Map();
+function thermoStep(d) { const st = tnum(d.attributes?.target_temp_step); return st || (tnum(d.attributes?.max_temp) > 40 ? 1 : 0.5); }
+function thermoClamp(d, v) { const a = d.attributes || {}; return Math.min(tnum(a.max_temp) ?? 90, Math.max(tnum(a.min_temp) ?? 50, v)); }
+function thermoNudge(d, dir, redraw, key = 'temperature') {
+  if (!canControl()) return;
+  d = S.devices.find(x => x.entity_id === d.entity_id) || d;
+  const a = { ...(d.attributes || {}) };
+  if (tnum(a[key]) == null) return;
+  a[key] = thermoClamp(d, Math.round((+a[key] + dir * thermoStep(d)) * 2) / 2);
+  if (key === 'target_temp_low' && a.target_temp_high != null && a[key] > a.target_temp_high - 3) a[key] = +a.target_temp_high - 3;
+  if (key === 'target_temp_high' && a.target_temp_low != null && a[key] < +a.target_temp_low + 3) a[key] = +a.target_temp_low + 3;
+  holdThermo(d, { attrs: d.state === 'heat_cool' ? { target_temp_low: a.target_temp_low, target_temp_high: a.target_temp_high } : { temperature: a.temperature } });
+  const q = thermoQueue.get(d.entity_id) || {}; clearTimeout(q.t);
+  q.t = setTimeout(async () => {
+    thermoQueue.delete(d.entity_id);
+    const cur = S.devices.find(x => x.entity_id === d.entity_id) || d, ca = cur.attributes || {};
+    const pay = cur.state === 'heat_cool' ? { target_temp_low: ca.target_temp_low, target_temp_high: ca.target_temp_high } : { temperature: ca.temperature };
+    await thermoSend(cur, pay, `${devName(cur)} set to ${thermoTarget(cur)}`); redraw?.();
+  }, 1200);
+  thermoQueue.set(d.entity_id, q);
+  redraw?.();
+}
+async function thermoSend(d, payload, label) {
+  const ok = await sendRaw({ entity_id: d.entity_id, action: 'climate_set', payload }, label);
+  if (!ok) thermoHold.delete(d.entity_id);
+  await sleep(ok ? 2500 : 0); await loadDevices().catch(() => {});
+  return ok;
+}
+function openThermostat(d, redraw) {
+  if (!d) return;
+  const s = sheet('<div id="th"></div>');
+  const draw = () => {
+    const cur = S.devices.find(x => x.entity_id === d.entity_id) || d; d = cur;
+    const a = cur.attributes || {}, can = canControl() && cur.state !== 'unavailable';
+    const modes = (a.hvac_modes || ['off', 'heat', 'cool', 'heat_cool']).filter(m => MODE_TEXT[m]);
+    const ecoOk = (a.preset_modes || []).some(p => /eco/i.test(p));
+    const ctl = (key, label) => `<div class="tset"><span class="small muted">${label}</span><div class="tq big">
+        <button class="btn" data-nudge="${key}" data-dir="-1" ${can ? '' : 'disabled'} aria-label="${label} cooler">−</button><b>${esc(tdeg(a[key]))}</b>
+        <button class="btn" data-nudge="${key}" data-dir="1" ${can ? '' : 'disabled'} aria-label="${label} warmer">＋</button></div></div>`;
+    let setters = '';
+    if (cur.state === 'off') setters = '<p class="small muted" style="margin:0">The thermostat is off. Pick Heat or Cool to turn it on.</p>';
+    else if (isEco(cur)) setters = '<p class="small muted" style="margin:0">Eco is on — the thermostat keeps its own energy-saving range. Turn Eco off to set a temperature.</p>';
+    else if (cur.state === 'heat_cool' && tnum(a.target_temp_low) != null) setters = `<div class="row" style="justify-content:space-around">${ctl('target_temp_low', 'Heat to')}${ctl('target_temp_high', 'Cool to')}</div>`;
+    else if (tnum(a.temperature) != null) setters = ctl('temperature', cur.state === 'cool' ? 'Cool to' : 'Heat to');
+    $('#th', s).innerHTML = `<h3>${esc(devName(cur))}</h3>
+      <div class="tnow"><span class="tbig">${esc(tdeg(a.current_temperature))}</span><span class="small muted">inside now${tnum(a.current_humidity) != null ? ` · ${Math.round(a.current_humidity)}% humidity` : ''}<br>${esc(ACTION_TEXT[a.hvac_action] || '')}</span></div>
+      ${setters}
+      <div class="lab">Mode</div>
+      <div class="chips" style="flex-wrap:wrap">${modes.map(m => `<button class="chip" aria-pressed="${cur.state === m}" data-mode="${m}" ${can ? '' : 'disabled'}>${MODE_TEXT[m]}</button>`).join('')}
+        ${ecoOk ? `<button class="chip" aria-pressed="${isEco(cur)}" data-eco ${can && cur.state !== 'off' ? '' : 'disabled'}>🍃 Eco</button>` : ''}</div>
+      ${canControl() ? '' : '<p class="small muted" style="margin:0">Ask an admin to turn on <b>Can control</b> to change the thermostat.</p>'}
+      <button class="btn" id="thDone">Done</button>`;
+    $$('[data-nudge]', s).forEach(b => b.onclick = () => thermoNudge(cur, +b.dataset.dir, () => { draw(); redraw?.(); }, b.dataset.nudge));
+    $$('[data-mode]', s).forEach(b => b.onclick = async () => {
+      const m = b.dataset.mode; if (m === cur.state) return;
+      const pay = { hvac_mode: m };
+      if (isEco(cur) && m !== 'off') pay.preset_mode = 'none';
+      holdThermo(cur, { state: m, ...(pay.preset_mode ? { attrs: { preset_mode: 'none' } } : {}) });
+      draw(); redraw?.(); $$('[data-mode],[data-eco]', s).forEach(x => x.disabled = true);
+      await thermoSend(cur, pay, `${devName(cur)}: ${MODE_TEXT[m]}`); if ($('#th')) draw(); redraw?.();
+    });
+    const eco = $('[data-eco]', s);
+    if (eco) eco.onclick = async () => {
+      const want = isEco(cur) ? 'none' : (a.preset_modes || []).find(p => /eco/i.test(p));
+      holdThermo(cur, { attrs: { preset_mode: want } });
+      draw(); redraw?.(); $$('[data-mode],[data-eco]', s).forEach(x => x.disabled = true);
+      await thermoSend(cur, { preset_mode: want }, `Eco ${want === 'none' ? 'off' : 'on'}`); if ($('#th')) draw(); redraw?.();
+    };
+    $('#thDone', s).onclick = closeSheet;
+  };
+  draw();
 }
 async function sendCommand(d, action) {
   if (!bridgeOnline()) toast('The house looks offline — trying anyway…', 3000);
@@ -823,7 +949,8 @@ function viewHomeDash() {
         const list = p.glance.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
         const ot = outdoorTemp(), wind = weatherDevices().find(d => /wind.*speed|^wind$/i.test(devName(d)));
         const wbtn = weatherDevices().length ? `<a class="wbtn" href="/weather"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/></svg><span class="grow"><b>Weather</b>${ot ? `<br><span class="small">${esc(devValue(ot).text)}${wind ? ` · wind ${esc(devValue(wind).text)}` : ''}</span>` : ''}</span><span aria-hidden="true">›</span></a>` : '';
-        if (list.length || wbtn) parts.push(`<section class="hsec"><div class="lab">At a glance</div>${list.length ? `<div class="card glance" style="grid-template-columns:repeat(${Math.min(list.length, 4)},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const num = d.kind === 'sensor' && !isNaN(n) && d.device_class !== 'timestamp';
+        const thermos = shownDevices().filter(d => d.kind === 'climate').map(thermoTile).join('');
+        if (list.length || wbtn || thermos) parts.push(`<section class="hsec"><div class="lab">At a glance</div>${thermos}${list.length ? `<div class="card glance" style="grid-template-columns:repeat(${Math.min(list.length, 4)},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const num = d.kind === 'sensor' && !isNaN(n) && d.device_class !== 'timestamp';
           const big = num ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${/inhg/i.test(u) ? Math.round(n * 100) / 100 : Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}`) : v.text;
           const unit = num && !deg && !pct && u ? `<span class="gu">${esc(u)}</span>` : '';
           const label = shortName(d).replace(/ (temperature|temp)$/i, '');

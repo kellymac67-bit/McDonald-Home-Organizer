@@ -210,3 +210,15 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .whero{flex-direction:row;align-items:center;gap:16px}
 .wbig{font-size:56px;font-weight:750;line-height:1;letter-spacing:-.02em}
 .gu{font-size:13px;font-weight:600;color:var(--muted);margin-left:3px}
+
+/* thermostat */
+.ttile{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
+.ttile.heat{border-color:#e8833a}.ttile.cool{border-color:#3a8be8}
+.ttile .tmain{display:flex;align-items:center;gap:14px;background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;width:100%}
+.tbig{font-size:40px;font-weight:700;line-height:1;min-width:2.2em}
+.ttile.heat .tbig{color:#d4651c}.ttile.cool .tbig{color:#2a72c8}
+.tq{display:flex;align-items:center;justify-content:center;gap:16px}
+.tq b{font-size:20px;min-width:2.4em;text-align:center}
+.tq.big .btn{width:56px;height:48px;font-size:24px;padding:0}.tq.big b{font-size:34px}
+.tnow{display:flex;align-items:center;gap:14px}
+.tset{display:flex;flex-direction:column;align-items:center;gap:6px}

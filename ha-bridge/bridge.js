@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.4.3';
+const VERSION = '0.5.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -22,7 +22,10 @@ const SENSOR_CLASSES = new Set(['temperature', 'humidity', 'moisture', 'illumina
   'wind_speed', 'precipitation', 'precipitation_intensity', 'irradiance', 'atmospheric_pressure']);   // incl. weather station
 const BINARY_CLASSES = new Set(['door', 'window', 'opening', 'garage_door', 'moisture', 'motion', 'smoke', 'gas',
   'cold', 'heat', 'problem', 'safety', 'lock', 'occupancy', 'presence', 'vibration', 'tamper']);
-const KEEP_ATTRS = ['unit_of_measurement', 'device_class', 'friendly_name', 'brightness', 'battery_level', 'current_position'];
+const KEEP_ATTRS = ['unit_of_measurement', 'device_class', 'friendly_name', 'brightness', 'battery_level', 'current_position',
+  // thermostats
+  'current_temperature', 'temperature', 'target_temp_low', 'target_temp_high', 'hvac_action', 'hvac_modes', 'preset_mode', 'preset_modes',
+  'current_humidity', 'min_temp', 'max_temp', 'target_temp_step', 'fan_mode'];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
 const log = (...a) => console.log(new Date().toISOString().slice(0, 19).replace('T', ' '), ...a);
@@ -122,7 +125,7 @@ function scheduleCatalog(ms = 15e3) {
 }
 const pickAttrs = s => Object.fromEntries(KEEP_ATTRS.filter(k => s.attributes[k] !== undefined).map(k => [k, s.attributes[k]]));
 
-let hasPlatform = null;
+let hasPlatform = null, hasClimate = null;
 async function buildCatalog() {
   if (hasPlatform === null) hasPlatform = !(await sb.from('ha_devices').select('platform').limit(1)).error;
   const [areas, devices, entities, states] = await Promise.all([
@@ -153,7 +156,7 @@ async function buildCatalog() {
     const domain0 = e.entity_id.split('.')[0];
     // cameras and sensors only when they have an Area (keeps the Salem Center cameras out);
     // lights, switches, locks and garage doors always, so every lamp can go in a scene
-    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan'].includes(domain0)) continue;
+    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan', 'climate'].includes(domain0)) continue;
     const s = stateOf.get(e.entity_id); if (!s) continue;
     const domain = e.entity_id.split('.')[0];
     const dc = s.attributes.device_class || '';
@@ -167,7 +170,7 @@ async function buildCatalog() {
 
     if (e.entity_category) continue;              // skip settings / diagnostics
     let kind = null;
-    if (['camera', 'switch', 'light', 'lock', 'cover'].includes(domain)) kind = domain;
+    if (['camera', 'switch', 'light', 'lock', 'cover', 'climate'].includes(domain)) kind = domain;
     else if (e.platform === 'ambient_station' && (domain === 'sensor' || domain === 'binary_sensor')) kind = domain;   // every weather reading
     else if (domain === 'input_boolean' || domain === 'fan') kind = 'switch';   // on/off helpers ("Boiler alerts") and fans (Dreo)
     else if (domain === 'sensor' && SENSOR_CLASSES.has(dc)) kind = 'sensor';
@@ -198,6 +201,10 @@ async function buildCatalog() {
   // sync with the app database (keeping snapshot/motion info we already have)
   const ex = await sb.from('ha_devices').select('entity_id, snapshot_path, snapshot_at, last_motion');
   if (!ok(ex, 'Reading device list')) throw new Error('database not reachable');
+  // thermostats need supabase/010_thermostat.sql; until it's run, leave them out instead of failing the whole list
+  if (hasClimate === null) hasClimate = !/ha_devices_kind_check/.test((await sb.from('ha_devices').insert({ entity_id: 'climate.__probe', kind: 'climate', enabled: false })).error?.message || '');
+  if (hasClimate) await sb.from('ha_devices').delete().eq('entity_id', 'climate.__probe');
+  else for (const [id, r] of rows) if (r.kind === 'climate') { rows.delete(id); log(`Thermostat ${r.name} skipped — run supabase/010_thermostat.sql in Supabase`); }
   const inDb = new Map(ex.data.map(r => [r.entity_id, r]));
   const existing = new Set(inDb.keys());
   for (const [id, r] of rows) {
@@ -220,7 +227,7 @@ async function buildCatalog() {
   }
   const n = k => [...rows.values()].filter(r => r.kind === k).length;
   log(`Device list: ${rows.size} items (${n('camera')} cameras, ${n('switch') + n('light')} switches/lights, ` +
-      `${n('sensor') + n('binary_sensor')} sensors). Added ${fresh.length}, removed ${gone.length}.`);
+      `${n('sensor') + n('binary_sensor')} sensors${n('climate') ? `, ${n('climate')} thermostat` : ''}). Added ${fresh.length}, removed ${gone.length}.`);
 }
 
 async function loadSettings() {
@@ -343,6 +350,13 @@ async function pollCommands() {
         } else if (c.action === 'open' || c.action === 'close') {
           if (row.kind !== 'cover') throw new Error('Not a garage door');
           await haCall({ type: 'call_service', domain: 'cover', service: c.action === 'open' ? 'open_cover' : 'close_cover', target: { entity_id: c.entity_id } });
+        } else if (c.action === 'climate_set') {
+          if (row.kind !== 'climate') throw new Error('Not a thermostat');
+          const p = c.payload || {}, target = { entity_id: c.entity_id };
+          if (p.hvac_mode) await haCall({ type: 'call_service', domain: 'climate', service: 'set_hvac_mode', service_data: { hvac_mode: p.hvac_mode }, target });
+          if (p.preset_mode) await haCall({ type: 'call_service', domain: 'climate', service: 'set_preset_mode', service_data: { preset_mode: p.preset_mode }, target });
+          const temps = Object.fromEntries(['temperature', 'target_temp_low', 'target_temp_high'].filter(k => p[k] != null).map(k => [k, Number(p[k])]));
+          if (Object.keys(temps).length) await haCall({ type: 'call_service', domain: 'climate', service: 'set_temperature', service_data: temps, target });
         } else if (c.action === 'lock' || c.action === 'unlock') {
           if (row.kind !== 'lock') throw new Error('Not a lock');
           await haCall({ type: 'call_service', domain: 'lock', service: c.action, target: { entity_id: c.entity_id } });
