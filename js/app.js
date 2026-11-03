@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.4.1';
+const VERSION = '2.4.2';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -352,6 +352,7 @@ const devName = d => d.display_name || d.name.replace(/\s+live view$/i, '').trim
 const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
 const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉', climate: '🌡️' };
 function devIcon(d) {
+  if (d.entity_id.startsWith('input_boolean.')) return '🔔';
   if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
   if (d.kind === 'binary_sensor') return { moisture: '💧', door: '🚪', window: '🪟', garage_door: '🚗', opening: '🚪', motion: '🏃', smoke: '🔥', gas: '⚠️' }[d.device_class] || '◉';
   if (d.kind === 'lock') return d.state === 'locked' ? '🔒' : '🔓';
@@ -847,7 +848,10 @@ const SCENE_ICONS = {
 const sicon = (k, size = 22) => `<svg class="sic" width="${size}" height="${size}" viewBox="0 0 24 24" aria-hidden="true">${SCENE_ICONS[k] || SCENE_ICONS.bulb}</svg>`;
 const sortedScenes = () => [...(S.scenes || [])].sort((a, b) => a.sort - b.sort || a.name.localeCompare(b.name));
 const sceneById = id => (S.scenes || []).find(x => x.id === id);
-const switchables = () => shownDevices().filter(d => ['switch', 'light'].includes(d.kind));
+// on/off settings made in Home Assistant (like "Boiler alerts") aren't lights
+const isSetting = d => d.entity_id.startsWith('input_boolean.');
+const switchables = () => shownDevices().filter(d => ['switch', 'light'].includes(d.kind) && !isSetting(d));
+const settingSwitches = () => shownDevices().filter(d => d.kind === 'switch' && isSetting(d));
 function placeName(d) { const t = devPlace(d); return t.length ? t.map(l => l.name).join(' › ') : d.ha_area || 'No area'; }
 function groupByPlace(list) {
   const order = buildings().map(b => b.name);
@@ -1174,7 +1178,9 @@ function viewLights() {
         const on = list.filter(d => d.state === 'on').map(d => d.entity_id), offl = list.filter(d => d.state === 'off').map(d => d.entity_id);
         const bulk = !canControl() ? '' : on.length ? `<button class="btn sm" data-bulk="off" data-ids="${on.join(',')}">All off</button>` : offl.length > 1 ? `<button class="btn sm" data-bulk="on" data-ids="${offl.join(',')}">All on</button>` : '';
         return `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">${esc(place)}</div>${bulk}</div><div class="card" style="padding:2px 14px"><div class="list">${list.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => devRow(d, false)).join('')}</div></div></section>`;
-      }).join('') || '<div class="card muted">No lights or switches yet.</div>'}`;
+      }).join('') || '<div class="card muted">No lights or switches yet.</div>'}
+      ${settingSwitches().length ? `<section class="hsec"><div class="lab">Alert settings</div><div class="card" style="padding:2px 14px"><div class="list">${settingSwitches().map(d => devRow(d, false)).join('')}</div></div>
+        <p class="small muted" style="margin:0">Turn these off to pause those phone alerts (for example, boiler alerts in summer). They aren't lights, so "Turn off every light" leaves them alone.</p></section>` : ''}`;
     wireDevices(el, draw); wireScenes(el, draw);
   };
   draw();
