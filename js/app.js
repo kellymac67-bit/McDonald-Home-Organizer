@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.6.0';
+const VERSION = '2.7.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -2123,7 +2123,7 @@ function viewMore() {
       <p class="small" style="margin:0"><b>iPhone:</b> open this page in Safari → Share button → <i>Add to Home Screen</i>.<br><b>Android:</b> open in Chrome → ⋮ menu → <i>Add to Home screen</i> (or <i>Install app</i>).</p></details>
     <button class="btn" id="refresh">Refresh data</button>
     <button class="btn danger" id="out">Sign out</button>
-    <p class="small muted center">Home Organizer ${VERSION}</p>`;
+    <p class="small muted center">McDonald Home ${VERSION}</p>`;
   $('#exp').onclick = e => {
     e.preventDefault();
     const rows = [['Box', 'Box name', 'Category', 'Place', 'Item', 'Qty', 'Item notes', 'Box notes', 'Link']];
@@ -2260,7 +2260,7 @@ function viewFamily() {
 function viewSignIn(mode = 'in', msg = '') {
   $('#tabs').hidden = true; $('#top').hidden = true;
   const titles = { in: 'Sign in', new: 'First time here? Create your password', reset: 'Reset your password' };
-  view().innerHTML = `<div class="signin"><img class="logo" src="/icons/icon-192.png" alt=""><h2>Home Organizer</h2>
+  view().innerHTML = `<div class="signin"><img class="logo" src="/icons/icon-192.png" alt=""><h2>McDonald Home</h2>
     <p class="muted" style="margin:0">${titles[mode]}</p>
     ${msg ? `<div class="card small"><div>${msg}</div></div>` : ''}
     <form id="auth" style="display:flex;flex-direction:column;gap:10px">
@@ -2331,7 +2331,7 @@ async function start(session) {
     if (claimed) { await loadAll(); toast('Welcome! You are the admin.'); return render(); }
   }
   if (!S.me) {
-    header('Home Organizer'); $('#tabs').hidden = true;
+    header('McDonald Home'); $('#tabs').hidden = true;
     view().innerHTML = `<div class="card center"><h2 style="justify-content:center">Not on the family list</h2><p class="muted" style="margin:0">${esc(S.email)} hasn't been added yet. Ask whoever runs the app to add you under More → Family members.</p><button class="btn" id="out">Sign out</button></div>`;
     $('#out').onclick = async () => { await sb.auth.signOut(); location.href = '/'; };
     return;
