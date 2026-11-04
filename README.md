@@ -97,3 +97,8 @@ When the Tesla is unplugged in the morning or plugged in at night (seen by the T
 2. Run `supabase/012_routines.sql`. It creates two routines, "Heading out" (unplugged, 5–10 am) and "Home for the night" (plugged in, 3 pm–midnight).
 3. Update the bridge to 0.6.0. It saves each routine into Home Assistant as an automation named "Routine: …".
 4. To change the items, times, days and checks, go to More → Routines → Edit (admins only).
+
+## History charts and activity log
+Run `supabase/013_history_activity.sql`, then update the bridge to 0.7.0.
+- **History:** every 10 minutes the bridge saves each temperature, humidity and weather reading, plus the thermostat's inside temperature, and keeps 90 days. Tap any reading to see a chart for 24 hours, 7 days, 30 days or 90 days. That includes rows on room pages, At a glance tiles, the Weather page, and the thermostat's *Temperature history* button. Touch the chart to read a value.
+- **Activity log** (More → Activity log): lock and unlock, garage open and close, lights on and off, scenes, thermostat changes, Tesla plugged in or unplugged, and water, smoke and gas alarms. Each entry says who did it: the person who tapped it in the app, the schedule that ran, or "by hand" (keypad, wall switch, or the device's own app). Entries are kept 6 months.

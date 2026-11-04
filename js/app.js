@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.4.4';
+const VERSION = '2.5.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -173,7 +173,7 @@ const routes = [
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
-  [/^\/routines$/, viewRoutines], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
+  [/^\/routines$/, viewRoutines], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -415,7 +415,8 @@ function devRow(d, showRoom) {
     const v = devValue(d);
     right = `<span class="row" style="gap:6px;flex-wrap:nowrap"><span class="val ${v.cls || ''}">${esc(v.text)}</span><button class="btn sm" data-thermo="${esc(d.entity_id)}">${canControl() ? 'Adjust' : 'View'}</button></span>`;
   } else { const v = devValue(d); right = `<span class="val ${v.cls || ''}">${esc(v.text)}</span>`; }
-  return `<div class="devrow"><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}</div>`;
+  const hist = canChart(d) ? ` data-hist="${esc(d.entity_id)}" role="button" tabindex="0"` : '';
+  return `<div class="devrow${hist ? ' tapable' : ''}"${hist}><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}</div>`;
 }
 const KIND_ORDER = { climate: 0, lock: 0, cover: 0, switch: 1, light: 1, binary_sensor: 3, sensor: 4 };
 function devicesBlock(list, { showRoom = true } = {}) {
@@ -425,6 +426,7 @@ function devicesBlock(list, { showRoom = true } = {}) {
     ${rest.length ? `<div class="list">${rest.map(d => devRow(d, showRoom)).join('')}</div>` : ''}`;
 }
 function wireDevices(root, redraw) {
+  wireHistory(root);
   $$('[data-thermo]', root).forEach(b => b.onclick = () => openThermostat(S.devices.find(d => d.entity_id === b.dataset.thermo), redraw));
   $$('[data-tq]', root).forEach(b => b.onclick = () => {
     const d = S.devices.find(x => x.entity_id === b.dataset.tq); if (!d) return;
@@ -566,6 +568,7 @@ function openThermostat(d, redraw) {
       <div class="chips" style="flex-wrap:wrap">${modes.map(m => `<button class="chip" aria-pressed="${cur.state === m}" data-mode="${m}" ${can ? '' : 'disabled'}>${MODE_TEXT[m]}</button>`).join('')}
         ${ecoOk ? `<button class="chip" aria-pressed="${isEco(cur)}" data-eco ${can && cur.state !== 'off' ? '' : 'disabled'}>🍃 Eco</button>` : ''}</div>
       ${canControl() ? '' : '<p class="small muted" style="margin:0">Ask an admin to turn on <b>Can control</b> to change the thermostat.</p>'}
+      <button class="btn" id="thHist">📈 Temperature history</button>
       <a class="btn" href="https://home.google.com/" target="_blank" rel="noopener">🔥 Emergency heat — open Google Home</a>
       <p class="small muted" style="margin:-4px 0 0">Google doesn't let other apps turn on emergency heat, so it opens the Google Home app. Tap the thermostat there, then Mode.</p>
       ${'alert_low' in cur ? `<div class="lab">Phone alerts</div>
@@ -593,6 +596,7 @@ function openThermostat(d, redraw) {
       await thermoSend(cur, { preset_mode: want }, `Eco ${want === 'none' ? 'off' : 'on'}`); if ($('#th')) draw(); redraw?.();
     };
     $('#thDone', s).onclick = closeSheet;
+    $('#thHist', s).onclick = () => openHistory(cur);
     let alT;
     $$('[data-al]', s).forEach(b => b.onclick = () => {
       const k = b.dataset.al, other = k === 'alert_low' ? cur.alert_high : cur.alert_low;
@@ -941,6 +945,148 @@ function wireScenes(root, redraw) {
   });
 }
 
+// ---- History charts ----
+const canChart = d => (d.kind === 'sensor' && d.device_class !== 'timestamp' && !isNaN(parseFloat(d.state))) || d.kind === 'climate';
+function wireHistory(root) {
+  $$('[data-hist]', root).forEach(el => {
+    const open = e => { if (e.target.closest('button, a, .tgl')) return; openHistory(S.devices.find(d => d.entity_id === el.dataset.hist)); };
+    el.onclick = open; el.onkeydown = e => { if (e.key === 'Enter') open(e); };
+  });
+}
+const RANGES = [['24h', 1, 10], ['7 days', 7, 60], ['30 days', 30, 240], ['90 days', 90, 720]];
+function fmtNum(v, u) { if (v == null || isNaN(v)) return '–'; const r = Math.abs(v) >= 100 ? Math.round(v) : Math.round(v * 10) / 10; return /°/.test(u) ? `${r}°` : u === '%' ? `${r}%` : `${r}${u ? ' ' + u : ''}`; }
+function chartSvg(pts, unit, days) {
+  if (pts.length < 2) return '<div class="camph" style="aspect-ratio:2/1">Not enough history yet — it fills in every 10 minutes.</div>';
+  const W = 340, H = 170, L = 38, R = 8, T = 10, B = 24;
+  const t0 = +new Date(pts[0].t), t1 = +new Date(pts[pts.length - 1].t);
+  let lo = Math.min(...pts.map(p => p.lo)), hi = Math.max(...pts.map(p => p.hi));
+  if (hi - lo < 1) { lo -= 1; hi += 1; }
+  const pad = (hi - lo) * 0.08; lo -= pad; hi += pad;
+  const x = t => L + (W - L - R) * ((+new Date(t) - t0) / Math.max(1, t1 - t0)), y = v => T + (H - T - B) * (1 - (v - lo) / (hi - lo));
+  // break the line where readings are missing (bridge or house offline)
+  const step = RANGES.find(r => r[1] === days)[2] * 60e3 * 2.5;
+  let d = '', band = '';
+  pts.forEach((p, i) => { const gap = i && +new Date(p.t) - +new Date(pts[i - 1].t) > step; d += `${!i || gap ? 'M' : 'L'}${x(p.t).toFixed(1)},${y(p.avg).toFixed(1)}`; });
+  if (days > 1) band = `<path d="M${pts.map(p => `${x(p.t).toFixed(1)},${y(p.hi).toFixed(1)}`).join('L')}L${pts.slice().reverse().map(p => `${x(p.t).toFixed(1)},${y(p.lo).toFixed(1)}`).join('L')}Z" fill="var(--brand)" opacity=".12"/>`;
+  const ticks = [lo + pad, (lo + hi) / 2, hi - pad];
+  const lbl = t => days <= 1 ? new Date(t).toLocaleTimeString([], { hour: 'numeric' }) : new Date(t).toLocaleDateString([], { month: 'short', day: 'numeric' });
+  return `<svg class="chart" viewBox="0 0 ${W} ${H}" role="img" aria-label="Chart">
+    ${ticks.map(v => `<line x1="${L}" x2="${W - R}" y1="${y(v)}" y2="${y(v)}" stroke="var(--line)"/><text x="${L - 4}" y="${y(v) + 4}" text-anchor="end" class="ct">${esc(fmtNum(v, unit))}</text>`).join('')}
+    ${band}<path d="${d}" fill="none" stroke="var(--brand)" stroke-width="2" stroke-linejoin="round" stroke-linecap="round"/>
+    <text x="${L}" y="${H - 6}" class="ct">${esc(lbl(t0))}</text><text x="${W - R}" y="${H - 6}" text-anchor="end" class="ct">${esc(days <= 1 ? 'now' : lbl(t1))}</text>
+    <line id="cx" x1="0" x2="0" y1="${T}" y2="${H - B}" stroke="var(--muted)" stroke-dasharray="3 3" visibility="hidden"/><circle id="cdot" r="4" fill="var(--brand)" visibility="hidden"/>
+    <rect x="${L}" y="${T}" width="${W - L - R}" height="${H - T - B}" fill="transparent" id="chit"/></svg>`;
+}
+function openHistory(d) {
+  if (!d) return;
+  const unit = d.kind === 'climate' ? '°' : d.unit || d.attributes?.unit_of_measurement || '';
+  let days = 1;
+  const s = sheet(`<h3>${esc(d.kind === 'climate' ? devName(d) + ' — inside temperature' : devName(d))}</h3>
+    <div class="row" style="justify-content:space-between;align-items:baseline"><span class="tbig" style="font-size:34px">${esc(d.kind === 'climate' ? tdeg(d.attributes?.current_temperature) : devValue(d).text)}</span><span class="small muted" id="hpick"></span></div>
+    <div class="chips">${RANGES.map(([l, n]) => `<button class="chip" data-days="${n}" aria-pressed="${n === 1}">${l}</button>`).join('')}</div>
+    <div id="hchart"><div class="camph" style="aspect-ratio:2/1">Loading…</div></div>
+    <div class="small muted" id="hstats"></div>
+    <div id="hact"></div>
+    <button class="btn" id="hDone">Done</button>`);
+  $('#hDone', s).onclick = closeSheet;
+  const load = async () => {
+    const [, n, bucket] = RANGES.find(r => r[1] === days);
+    const { data, error } = await sb.rpc('ha_series', { p_entity: d.entity_id, p_since: new Date(Date.now() - n * 86400e3).toISOString(), p_bucket_minutes: bucket });
+    if (!$('#hchart', s)) return;
+    if (error) { $('#hchart', s).innerHTML = `<div class="card small">${/ha_series|function/i.test(error.message) ? 'History isn\'t set up yet — run supabase/013_history_activity.sql in Supabase.' : esc(error.message)}</div>`; return; }
+    const pts = (data || []).map(p => ({ ...p, avg: +p.avg, lo: +p.lo, hi: +p.hi }));
+    $('#hchart', s).innerHTML = chartSvg(pts, unit, days);
+    if (pts.length) {
+      const lo = pts.reduce((a, p) => p.lo < a.lo ? p : a), hi = pts.reduce((a, p) => p.hi > a.hi ? p : a);
+      const when = t => new Date(t).toLocaleString([], days <= 1 ? { hour: 'numeric', minute: '2-digit' } : { month: 'short', day: 'numeric', hour: 'numeric' });
+      $('#hstats', s).innerHTML = `Low <b>${esc(fmtNum(lo.lo, unit))}</b> (${esc(when(lo.t))}) · High <b>${esc(fmtNum(hi.hi, unit))}</b> (${esc(when(hi.t))})`;
+    } else $('#hstats', s).textContent = '';
+    // touch / hover the chart to read a value
+    const svg = $('svg.chart', s), hit = $('#chit', s);
+    if (svg && hit && pts.length > 1) {
+      const pick = e => {
+        const r = svg.getBoundingClientRect(), vx = (e.clientX - r.left) * (340 / r.width);
+        const t0 = +new Date(pts[0].t), t1 = +new Date(pts[pts.length - 1].t), tt = t0 + (t1 - t0) * Math.min(1, Math.max(0, (vx - 38) / (340 - 46)));
+        const p = pts.reduce((a, q) => Math.abs(+new Date(q.t) - tt) < Math.abs(+new Date(a.t) - tt) ? q : a);
+        const px = 38 + (340 - 46) * ((+new Date(p.t) - t0) / Math.max(1, t1 - t0));
+        const ys = [...svg.querySelectorAll('line')].slice(0, 3).map(l => +l.getAttribute('y1'));
+        const vals = [...svg.querySelectorAll('text.ct')].slice(0, 3).map(t => parseFloat(t.textContent));
+        const py = ys[0] + (ys[2] - ys[0]) * ((p.avg - vals[0]) / ((vals[2] - vals[0]) || 1));
+        $('#cx', s).setAttribute('x1', px); $('#cx', s).setAttribute('x2', px); $('#cx', s).setAttribute('visibility', 'visible');
+        $('#cdot', s).setAttribute('cx', px); $('#cdot', s).setAttribute('cy', py); $('#cdot', s).setAttribute('visibility', 'visible');
+        $('#hpick', s).textContent = `${fmtNum(p.avg, unit)} · ${new Date(p.t).toLocaleString([], { weekday: 'short', hour: 'numeric', minute: '2-digit' })}`;
+      };
+      hit.addEventListener('pointermove', pick); hit.addEventListener('pointerdown', pick);
+    }
+  };
+  $$('[data-days]', s).forEach(b => b.onclick = () => { days = +b.dataset.days; $$('[data-days]', s).forEach(x => x.setAttribute('aria-pressed', String(x === b))); load(); });
+  load();
+  if (d.kind === 'climate') sb.from('ha_activity').select('*').eq('entity_id', d.entity_id).order('at', { ascending: false }).limit(5).then(({ data }) => {
+    if (data?.length && $('#hact', s)) $('#hact', s).innerHTML = `<div class="lab">Recent changes</div><div class="card" style="padding:2px 14px">${data.map(actRow).join('')}</div>`;
+  });
+}
+
+// ---- Activity log ----
+const ACT_FILTERS = [['all', 'All'], ['doors', 'Doors'], ['lights', 'Lights'], ['climate', 'Thermostat'], ['tesla', 'Tesla']];
+function actWho(by) {
+  if (!by) return '';
+  const [who, via] = by.split(' · ');
+  const m = S.members.find(x => x.email === who);
+  return m ? `${m.name || m.email.split('@')[0]}${via ? ` · ${via}` : ''}` : by;
+}
+function actIcon(a) {
+  if (a.kind === 'lock') return /unlock/i.test(a.event) ? '🔓' : '🔒';
+  if (a.kind === 'cover') return '🚗';
+  if (a.kind === 'scene') return '✨';
+  if (a.kind === 'climate') return '🌡️';
+  if (/plug/i.test(a.event)) return '⚡';
+  if (/water|smoke|gas/i.test(a.event)) return '⚠️';
+  if (a.kind === 'binary_sensor') return '🚪';
+  return /on$/i.test(a.event) ? '💡' : '⚪';
+}
+function actRow(a) {
+  const d = a.entity_id && S.devices.find(x => x.entity_id === a.entity_id);
+  const name = a.kind === 'scene' ? `${a.name} scene` : /plugged/i.test(a.event) ? 'Tesla' : d ? devName(d) : a.name;
+  const who = actWho(a.by_who);
+  return `<div class="actrow"><span class="ic">${actIcon(a)}</span><div class="grow" style="min-width:0"><div><b>${esc(name)}</b> ${esc(a.event.toLowerCase())}</div>${who ? `<div class="small muted">${esc(who)}</div>` : ''}</div>
+    <span class="small muted" style="white-space:nowrap">${esc(new Date(a.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}</span></div>`;
+}
+function viewActivity(params) {
+  header('Activity log', { backBtn: true }); tabs('more');
+  let f = params.get('show') || 'all', rows = [], done = false, busy = false;
+  view().innerHTML = `<div class="chips" id="af" style="flex-wrap:wrap"></div><div id="al" style="display:flex;flex-direction:column;gap:14px"><div class="card muted">Loading…</div></div>`;
+  const chips = () => { $('#af').innerHTML = ACT_FILTERS.map(([k, l]) => `<button class="chip" data-af="${k}" aria-pressed="${f === k}">${l}</button>`).join('');
+    $$('[data-af]').forEach(b => b.onclick = () => { f = b.dataset.af; history.replaceState(history.state, '', f === 'all' ? '/activity' : `/activity?show=${f}`); rows = []; done = false; chips(); more(); }); };
+  const query = () => {
+    let q = sb.from('ha_activity').select('*').order('at', { ascending: false }).limit(100);
+    if (f === 'doors') q = q.or('kind.in.(lock,cover),and(kind.eq.binary_sensor,event.in.(Opened,Closed))');
+    if (f === 'lights') q = q.in('kind', ['light', 'switch', 'scene']);
+    if (f === 'climate') q = q.eq('kind', 'climate');
+    if (f === 'tesla') q = q.in('event', ['Plugged in', 'Unplugged']);
+    if (rows.length) q = q.lt('at', rows[rows.length - 1].at);
+    return q;
+  };
+  const draw = () => {
+    const el = $('#al'); if (!el) return;
+    const days = new Map();
+    for (const a of rows) { const k = new Date(a.at).toDateString(); if (!days.has(k)) days.set(k, []); days.get(k).push(a); }
+    el.innerHTML = rows.length ? [...days].map(([k, list]) => `<section class="hsec"><div class="lab">${esc(dayName(new Date(k)))}</div><div class="card" style="padding:2px 14px">${list.map(actRow).join('')}</div></section>`).join('')
+        + (done ? '<p class="center small muted">That\'s everything (the log keeps 6 months).</p>' : '<button class="btn" id="amore">Show older</button>')
+      : '<div class="card muted">Nothing here yet. Door, garage, light and thermostat changes show up as they happen.</div>';
+    const m = $('#amore'); if (m) m.onclick = more;
+  };
+  const more = async () => {
+    if (busy) return; busy = true;
+    const { data, error } = await query();
+    busy = false;
+    if (error) { $('#al').innerHTML = `<div class="card">${/ha_activity/.test(error.message) ? 'The activity log isn\'t set up yet — run supabase/013_history_activity.sql in Supabase and update the bridge to 0.7.0.' : esc(error.message)}</div>`; return; }
+    rows.push(...data); if (data.length < 100) done = true; draw();
+  };
+  chips(); more();
+}
+const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = new Date(d); x.setHours(0, 0, 0, 0); const diff = Math.round((t - x) / 86400e3);
+  return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : x.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }); };
+
 // ---- Routines (checklists when the Tesla is unplugged / plugged in) ----
 const CHECKS = [['boiler', 'Boiler'], ['door', 'Front door'], ['garage', 'Garage'], ['lights', 'Lights'], ['thermostat', 'Thermostat'],
   ['chickens', 'Chickens'], ['weather', 'Weather'], ['charge', 'Tesla charge']];
@@ -1158,7 +1304,7 @@ function viewHomeDash() {
           const big = num ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${/inhg/i.test(u) ? Math.round(n * 100) / 100 : Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}`) : v.text;
           const unit = num && !deg && !pct && u ? `<span class="gu">${esc(u)}</span>` : '';
           const label = shortName(d).replace(/ (temperature|temp)$/i, '');
-          return `<div><div class="gv ${v.cls || ''}">${esc(big)}${unit}</div><div class="small muted">${esc(label)}</div></div>`; }).join('')}</div>` : ''}${wbtn}</section>`);
+          return `<div ${canChart(d) ? `data-hist="${esc(d.entity_id)}" class="tapable"` : ''}><div class="gv ${v.cls || ''}">${esc(big)}${unit}</div><div class="small muted">${esc(label)}</div></div>`; }).join('')}</div>` : ''}${wbtn}</section>`);
       } else if (s.key === 'cameras' && canCams()) {
         const list = p.cameras.map(id => S.devices.find(d => d.entity_id === id)).filter(d => d && d.enabled);
         if (list.length) parts.push(`<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Cameras</div><a class="small" href="/cameras">All cameras ›</a></div><div class="cams">${list.map(camTile).join('')}</div></section>`);
@@ -1303,8 +1449,9 @@ function viewWeather() {
           <div class="small muted">${esc(all[0].device_name || 'Ambient Weather')} · updated ${esc(relTime(latest))}</div>
         </div></div>
       ${W_GROUPS.map(([g]) => g).filter(g => groups.has(g)).map(g => `<section class="hsec"><div class="lab">${esc(g)}</div><div class="card" style="padding:2px 14px"><div class="list">
-        ${groups.get(g).map(d => { const v = devValue(d); return `<div class="devrow" style="min-height:48px;padding:6px 0"><span class="grow" style="font-weight:600">${esc(short(d))}</span><span class="val ${v.cls || ''}">${esc(v.text)}</span></div>`; }).join('')}
+        ${groups.get(g).map(d => { const v = devValue(d); return `<div class="devrow${canChart(d) ? ' tapable' : ''}" ${canChart(d) ? `data-hist="${esc(d.entity_id)}"` : ''} style="min-height:48px;padding:6px 0"><span class="grow" style="font-weight:600">${esc(short(d))}</span><span class="val ${v.cls || ''}">${esc(v.text)}</span></div>`; }).join('')}
       </div></div></section>`).join('')}`;
+    wireHistory(el);
   };
   draw();
   S.cleanup = pollDevices(draw, 30000);
@@ -1925,6 +2072,7 @@ function viewMore() {
       <a class="locrow" href="/categories"><span class="nm">Categories</span><span class="count">${S.categories.length}</span></a>
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
+      <a class="locrow" href="/activity"><span class="nm">Activity log</span><span class="muted">›</span></a>
       <a class="locrow" href="/routines"><span class="nm">Routines (Tesla checklists)</span><span class="count">${(S.routines || []).length}</span></a>
       ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
       <a class="locrow" href="#" id="exp"><span class="nm">Download everything (spreadsheet)</span><span class="muted">CSV</span></a>

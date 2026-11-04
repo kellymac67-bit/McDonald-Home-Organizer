@@ -236,3 +236,12 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .rst{font-size:18px}
 
 .scon{color:var(--brand);font-weight:600}
+
+/* history + activity */
+.tapable{cursor:pointer}
+.devrow.tapable:active,.glance .tapable:active{opacity:.6}
+.chart{width:100%;height:auto;display:block;touch-action:none}
+.chart .ct{font-size:11px;fill:var(--muted)}
+.actrow{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
+.actrow:last-child{border-bottom:0}
+.actrow .ic{font-size:20px;width:26px;text-align:center}

@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.6.0';
+const VERSION = '0.7.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -103,7 +103,7 @@ async function startHa() {
     haVersion = await haConnect();
     log('Connected to Home Assistant', haVersion);
     await haCall({ type: 'subscribe_events', event_type: 'state_changed' });
-    for (const t of ['area_registry_updated', 'device_registry_updated', 'entity_registry_updated'])
+    for (const t of ['area_registry_updated', 'device_registry_updated', 'entity_registry_updated', 'automation_triggered', 'script_started'])
       await haCall({ type: 'subscribe_events', event_type: t });
     await buildCatalog();
   } catch (e) {
@@ -281,9 +281,11 @@ async function syncTempAlerts() {
 // ---------------------------------------------------------------- State changes → app
 const dirty = new Set();
 function onHaEvent(ev) {
+  if (ev.event_type === 'automation_triggered' || ev.event_type === 'script_started') { rememberRun(ev); return; }
   if (ev.event_type !== 'state_changed') { if (ev.event_type?.endsWith('_registry_updated')) scheduleCatalog(); return; }
   const { entity_id, new_state, old_state } = ev.data;
   if (!new_state) return;
+  try { noteActivity(entity_id, old_state, new_state); } catch (e) { log('Activity:', e.message); }
 
   if (motionOf.has(entity_id)) {
     const isEvent = entity_id.startsWith('event.') || entity_id.startsWith('sensor.');
@@ -408,6 +410,17 @@ async function pollCommands() {
           await haCall({ type: 'call_service', domain: c.entity_id.split('.')[0], service: c.action, target: { entity_id: c.entity_id } });
         }
         log(`Done: ${c.action} ${c.entity_id || scenes.get(c.scene_id)?.name || c.scene_id || (c.payload?.entity_ids || []).length + ' devices'} (asked by ${c.requested_by})`);
+        // so the activity log can say who did it
+        const until = Date.now() + 90e3;
+        if (c.entity_id) recentBy.set(c.entity_id, { by: c.requested_by, until });
+        if (c.action.startsWith('bulk_')) for (const id of c.payload?.entity_ids || []) recentBy.set(id, { by: `${c.requested_by} · All ${c.action === 'bulk_on' ? 'on' : 'off'}`, until });
+        if (c.action.startsWith('scene_')) {
+          const sc = scenes.get(c.scene_id), btn = c.action.slice(6);
+          if (sc) {
+            for (const i of [...(sc.items || []), ...(sc.extras || [])]) recentBy.set(i.entity_id, { by: `${c.requested_by} · ${sc.name}`, until });
+            logActivity({ entity_id: null, name: sc.name, kind: 'scene', event: btn === 'run' ? 'Ran' : btn === 'on' ? 'On' : 'Off', by_who: c.requested_by });
+          }
+        }
         // tell Home Assistant who did what (an automation turns lock/unlock/open/close into a phone alert)
         if (row) haCall({ type: 'fire_event', event_type: 'mcdonald_home_command',
           event_data: { entity_id: c.entity_id, action: c.action, by: c.requested_by, name: row.name } }).catch(() => {});
@@ -604,6 +617,100 @@ async function cleanup() {
   log(`Removed ${r.data.length} snapshots older than ${opts.keep_snapshot_days} days`);
 }
 
+// ---------------------------------------------------------------- Activity log
+// Who did what: door, garage, lights, thermostat, alarms. "Who" is the person who tapped it in the app,
+// the schedule/automation that ran, or "by hand" (keypad, wall switch, the device's own app).
+const runs = new Map();          // HA context id → "Schedule: Outside On" (for ~2 minutes)
+const recentBy = new Map();      // entity_id → { by, until } set when the app carries out a command
+let activityQ = [], hasActivity = true;
+function rememberRun(ev) {
+  const name = ev.data?.name || ev.data?.entity_id || '';
+  if (!name || !ev.context?.id) return;
+  const label = /^Scene: /.test(name) ? name : /^Schedule: /.test(name) ? name : /^Routine: /.test(name) ? null : `Automation: ${name}`;
+  if (!label) return;
+  const parent = ev.context.parent_id && runs.get(ev.context.parent_id);   // a schedule that ran a scene script → "Schedule: …"
+  runs.set(ev.context.id, parent && parent.until > Date.now() ? { ...parent } : { label, until: Date.now() + 120e3 });
+  if (runs.size > 300) for (const [k, v] of runs) if (v.until < Date.now()) runs.delete(k);
+}
+function attribute(entity_id, ctx) {
+  const r = recentBy.get(entity_id);
+  if (r && r.until > Date.now()) return r.by;
+  for (const id of [ctx?.id, ctx?.parent_id]) { const x = id && runs.get(id); if (x && x.until > Date.now()) return x.label; }
+  if (ctx?.user_id) return 'Home Assistant';
+  return '';
+}
+const BY_HAND = { lock: 'Keypad / by hand / Schlage app', cover: 'Garage remote / wall button', switch: 'Wall switch / Kasa app',
+  light: 'Wall switch / Kasa app', climate: 'At the thermostat / Google Home', binary_sensor: '' };
+const LOG_BINARY = new Set(['door', 'window', 'garage_door', 'opening', 'moisture', 'smoke', 'gas', 'plug']);
+function noteActivity(entity_id, old_state, new_state) {
+  const row = catalog.get(entity_id);
+  if (!row || !old_state || !hasActivity) return;
+  const bad = st => !st || ['unavailable', 'unknown'].includes(st);
+  const o = old_state.state, n = new_state.state;
+  let event = '';
+  if (row.kind === 'lock') {
+    if (o !== n && !bad(o) && ['locked', 'unlocked', 'jammed', 'open'].includes(n)) event = { locked: 'Locked', unlocked: 'Unlocked', jammed: 'JAMMED', open: 'Opened' }[n];
+  } else if (row.kind === 'cover') {
+    if (o !== n && !bad(o) && ['open', 'closed'].includes(n)) event = n === 'open' ? 'Opened' : 'Closed';
+  } else if (row.kind === 'switch' || row.kind === 'light') {
+    if (o !== n && !bad(o) && ['on', 'off'].includes(n)) event = n === 'on' ? 'Turned on' : 'Turned off';
+  } else if (row.kind === 'binary_sensor') {
+    if (o !== n && !bad(o) && LOG_BINARY.has(row.device_class) && ['on', 'off'].includes(n)) {
+      const t = { door: ['Opened', 'Closed'], window: ['Opened', 'Closed'], garage_door: ['Opened', 'Closed'], opening: ['Opened', 'Closed'],
+        moisture: ['Water detected', 'Dry again'], smoke: ['SMOKE', 'Clear'], gas: ['GAS', 'Clear'], plug: ['Plugged in', 'Unplugged'] }[row.device_class];
+      event = t[n === 'on' ? 0 : 1];
+    }
+  } else if (row.kind === 'climate') {
+    const oa = old_state.attributes || {}, na = new_state.attributes || {};
+    const MODES = { off: 'Off', heat: 'Heat', cool: 'Cool', heat_cool: 'Heat·Cool', auto: 'Auto' };
+    const deg = v => `${Math.round(+v)}°`;
+    if (o !== n && !bad(o) && !bad(n)) event = `Mode: ${MODES[n] || n}`;
+    else if (oa.preset_mode !== na.preset_mode && na.preset_mode != null && oa.preset_mode != null) event = /eco/i.test(na.preset_mode) ? 'Eco on' : 'Eco off';
+    else if (na.temperature != null && oa.temperature != null && +na.temperature !== +oa.temperature) event = `Set to ${deg(na.temperature)}`;
+    else if (na.target_temp_low != null && (+na.target_temp_low !== +oa.target_temp_low || +na.target_temp_high !== +oa.target_temp_high)) event = `Set to ${deg(na.target_temp_low)}–${deg(na.target_temp_high)}`;
+  }
+  if (!event) return;
+  const by = attribute(entity_id, new_state.context) || BY_HAND[row.kind] || '';
+  activityQ.push({ at: new_state.last_changed || new Date().toISOString(), entity_id, name: row.name, kind: row.kind, event, by_who: by });
+}
+function logActivity(rowIn) { if (hasActivity) activityQ.push({ at: new Date().toISOString(), ...rowIn }); }
+async function flushActivity() {
+  if (!activityQ.length || !hasActivity) return;
+  const batch = activityQ.splice(0, 200);
+  const r = await sb.from('ha_activity').insert(batch);
+  if (r.error) {
+    if (/ha_activity/.test(r.error.message) && /exist|schema cache/i.test(r.error.message)) { hasActivity = false; activityQ = []; log('Activity log is off until supabase/013_history_activity.sql is run'); }
+    else { log('Saving activity:', r.error.message); if (activityQ.length < 2000) activityQ.unshift(...batch); }
+  }
+}
+
+// ---------------------------------------------------------------- History (for charts)
+// Every 10 minutes: one reading per temperature / humidity / weather sensor and thermostat.
+let hasReadings = true;
+async function recordReadings() {
+  if (!hasReadings) return;
+  const r = await sb.from('ha_devices').select('entity_id, kind, state, device_class, attributes').eq('enabled', true).in('kind', ['sensor', 'climate']);
+  if (!ok(r, 'Reading sensors for history')) return;
+  const at = new Date(Math.floor(Date.now() / 600e3) * 600e3).toISOString();
+  const rows = [];
+  for (const d of r.data) {
+    const v = d.kind === 'climate' ? parseFloat(d.attributes?.current_temperature) : d.device_class === 'timestamp' ? NaN : parseFloat(d.state);
+    if (Number.isFinite(v)) rows.push({ entity_id: d.entity_id, at, value: v });
+  }
+  for (let i = 0; i < rows.length; i += 500) {
+    const w = await sb.from('ha_readings').upsert(rows.slice(i, i + 500), { onConflict: 'entity_id,at', ignoreDuplicates: true });
+    if (w.error) {
+      if (/ha_readings/.test(w.error.message) && /exist|schema cache/i.test(w.error.message)) { hasReadings = false; log('History is off until supabase/013_history_activity.sql is run'); }
+      else log('Saving history:', w.error.message);
+      return;
+    }
+  }
+}
+async function cleanupHistory() {
+  if (hasReadings) await sb.from('ha_readings').delete().lt('at', new Date(Date.now() - 90 * 86400e3).toISOString());
+  if (hasActivity) await sb.from('ha_activity').delete().lt('at', new Date(Date.now() - 180 * 86400e3).toISOString());
+}
+
 // ---------------------------------------------------------------- Routines
 // "Heading out" / "Home for the night": when the Tesla is unplugged or plugged in (Wall Connector), the phone
 // gets an alert that opens the checklist in the app. Saved into Home Assistant as automations.
@@ -676,6 +783,10 @@ every(60e3, heartbeat);
 every(60e3, loadSettings);
 every(60e3, snapshotRound);
 every(3600e3, cleanup);
+every(3e3, flushActivity);
+every(600e3, recordReadings);
+setTimeout(() => recordReadings().catch(e => log('History:', e.message)), 20e3);
+every(6 * 3600e3, cleanupHistory);
 every(3600e3, async () => { if (haReady) await buildCatalog(); });
 setTimeout(async () => { try { await seedScenes(); await loadScenes(); } catch (e) { log('Scenes:', e.message); } }, 5000);
 every(30e3, loadScenes);
