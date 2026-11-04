@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.5.0';
+const VERSION = '2.5.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1285,7 +1285,6 @@ function viewHomeDash() {
     const p = prefs();
     const parts = [statusLine()];
     const al = homeAlerts();
-    if ((S.routines || []).some(r => r.enabled)) parts.push(`<div class="chips" style="flex-wrap:wrap">${S.routines.filter(r => r.enabled).map(r => `<a class="chip" href="/routine/${r.id}">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}</a>`).join('')}</div>`);
     if (al.length) parts.push(al.map(a => `<div class="alert"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/></svg><div class="grow"><b>${esc(a.text)}</b>${a.sub ? `<br><span class="small">${esc(a.sub)}</span>` : ''}</div>${a.btn || ''}</div>`).join(''));
     for (const s of p.sections.filter(s => s.show)) {
       if (s.key === 'doors') {
@@ -2073,6 +2072,7 @@ function viewMore() {
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
       <a class="locrow" href="/activity"><span class="nm">Activity log</span><span class="muted">›</span></a>
+      ${(S.routines || []).filter(r => r.enabled).map(r => `<a class="locrow" href="/routine/${r.id}"><span class="nm">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}</span><span class="muted">›</span></a>`).join('')}
       <a class="locrow" href="/routines"><span class="nm">Routines (Tesla checklists)</span><span class="count">${(S.routines || []).length}</span></a>
       ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
       <a class="locrow" href="#" id="exp"><span class="nm">Download everything (spreadsheet)</span><span class="muted">CSV</span></a>
