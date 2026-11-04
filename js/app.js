@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.4.3';
+const VERSION = '2.4.4';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -911,12 +911,18 @@ async function sendRaw(row, label) {
 }
 function sceneRow(sc) {
   const n = (sc.items || []).length;
-  const sub = sc.mode === 'single' ? `${plural(n, 'device')}${(sc.extras || []).length ? ' + doors' : ''}` : plural(n, 'light') + (n ? '' : ' — tap to set up');
+  // how many of the scene's lights are on right now (the blue button shows the current state)
+  const devs = (sc.items || []).map(i => S.devices.find(d => d.entity_id === i.entity_id)).filter(d => d && d.enabled && ['on', 'off'].includes(d.state));
+  const on = devs.filter(d => d.state === 'on').length;
+  const state = !devs.length ? '' : on === devs.length ? 'on' : on === 0 ? 'off' : 'some';
+  const sub = sc.mode === 'single' ? `${plural(n, 'device')}${(sc.extras || []).length ? ' + doors' : ''}`
+    : !n ? '0 lights — tap to set up' : state === 'on' ? (devs.length === 1 ? 'On' : `All ${devs.length} on`) : state === 'off' ? (devs.length === 1 ? 'Off' : `All ${devs.length} off`)
+    : state === 'some' ? `${on} of ${devs.length} on` : plural(n, 'light');
   const dis = canControl() ? '' : 'disabled';
   const btns = sc.mode === 'single'
     ? `<button class="btn sm primary sbtn" data-scene="${sc.id}" data-act="run" ${dis}>Run</button>`
-    : `<button class="btn sm primary sbtn" data-scene="${sc.id}" data-act="on" ${dis}>On</button><button class="btn sm sbtn" data-scene="${sc.id}" data-act="off" ${dis}>Off</button>`;
-  return `<div class="scrow">${sicon(sc.icon)}<div class="grow" style="min-width:0">${canControl() ? `<a class="nm" href="/scene/${sc.id}">${esc(sc.name)}</a>` : `<span class="nm">${esc(sc.name)}</span>`}<div class="small muted">${esc(sub)}</div></div>${btns}</div>`;
+    : `<button class="btn sm sbtn ${state === 'on' ? 'primary' : ''}" data-scene="${sc.id}" data-act="on" aria-pressed="${state === 'on'}" ${dis}>On</button><button class="btn sm sbtn ${state === 'off' ? 'primary' : ''}" data-scene="${sc.id}" data-act="off" aria-pressed="${state === 'off'}" ${dis}>Off</button>`;
+  return `<div class="scrow">${sicon(sc.icon)}<div class="grow" style="min-width:0">${canControl() ? `<a class="nm" href="/scene/${sc.id}">${esc(sc.name)}</a>` : `<span class="nm">${esc(sc.name)}</span>`}<div class="small ${sc.mode !== 'single' && (state === 'on' || state === 'some') ? 'scon' : 'muted'}">${esc(sub)}</div></div>${btns}</div>`;
 }
 function wireScenes(root, redraw) {
   $$('[data-scene]', root).forEach(b => b.onclick = async () => {

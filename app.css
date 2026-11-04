@@ -234,3 +234,5 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .rcheck .ic{font-size:22px;width:28px;text-align:center}
 .rcheck.warn .small{color:#a35a00;font-weight:600}
 .rst{font-size:18px}
+
+.scon{color:var(--brand);font-weight:600}
