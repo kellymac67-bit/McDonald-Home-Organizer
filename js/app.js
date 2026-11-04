@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.4.2';
+const VERSION = '2.4.3';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -994,15 +994,26 @@ function routineCheck(key, rt) {
   if (key === 'charge') {
     const W = shownDevices().filter(d => d.platform === 'tesla_wall_connector');
     if (!W.length) return null;
-    const plug = W.find(d => d.device_class === 'plug'), kwh = W.find(d => d.device_class === 'energy' && /session/i.test(devName(d))) || W.find(d => d.device_class === 'energy');
-    return { icon: '⚡', title: 'Tesla', text: [plug ? (plug.state === 'on' ? 'Plugged in' : 'Unplugged') : '', kwh && !off(kwh) ? `charged ${devValue(kwh).text} this session` : ''].filter(Boolean).join(' · '), st: 'info' };
+    return { icon: '⚡', title: 'Tesla', text: teslaLine(W, off), st: 'info' };
   }
   return null;
+}
+// "Plugged in · charging at 10.6 kW · 2.6 kWh this session" from the Wall Connector's sensors
+function teslaLine(W, off = d => !d.state || ['unavailable', 'unknown'].includes(d.state)) {
+  const plug = W.find(d => d.device_class === 'plug');
+  const kwh = W.find(d => d.device_class === 'energy' && /session/i.test(devName(d))) || W.find(d => d.device_class === 'energy' && !/lifetime/i.test(devName(d)));
+  const pw = W.find(d => d.device_class === 'power');
+  let kw = pw && !off(pw) ? parseFloat(pw.state) : NaN;
+  if (!isNaN(kw) && /^w$/i.test(pw.unit || '')) kw /= 1000;
+  const parts = [plug ? (off(plug) ? 'Charger offline' : plug.state === 'on' ? 'Plugged in' : 'Unplugged') : ''];
+  if (plug?.state === 'on' && !isNaN(kw)) parts.push(kw > 0.05 ? `charging at ${Math.round(kw * 10) / 10} kW` : 'done charging');
+  if (kwh && !off(kwh) && parseFloat(kwh.state) > 0) parts.push(`${Math.round(parseFloat(kwh.state) * 10) / 10} kWh this session`);
+  return parts.filter(Boolean).join(' · ');
 }
 function viewRoutines() {
   header('Routines', { backBtn: true }); tabs('more');
   const plug = shownDevices().find(d => d.platform === 'tesla_wall_connector' && d.device_class === 'plug');
-  view().innerHTML = `<div class="card small">${plug ? `⚡ Tesla Wall Connector: <b>${plug.state === 'on' ? 'plugged in' : 'unplugged'}</b>` : '⚡ The Tesla Wall Connector isn\'t in the app yet. Add it in Home Assistant (Settings → Devices &amp; services → Tesla Wall Connector) and give it the Area <b>Garage</b>.'}</div>
+  view().innerHTML = `<div class="card small">${plug ? `⚡ Tesla: <b>${esc(teslaLine(shownDevices().filter(d => d.platform === 'tesla_wall_connector')))}</b>` : '⚡ The Tesla Wall Connector isn\'t in the app yet. Add it in Home Assistant (Settings → Devices &amp; services → Tesla Wall Connector) and give it the Area <b>Garage</b>.'}</div>
     <div class="card" style="padding:4px 14px"><div class="list">${(S.routines || []).map(r => `<div class="locrow"><a href="/routine/${r.id}" class="grow" style="color:inherit;text-decoration:none"><div class="nm">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}${r.enabled ? '' : ' <span class="muted small">(off)</span>'}</div>
       <div class="small muted">When the Tesla is ${r.trigger_to === 'off' ? 'unplugged' : 'plugged in'} · ${fmt12(r.start_time)}–${fmt12(r.end_time)}${(r.days || []).length < 7 ? ' · ' + (r.days || []).map(d => DAY_LETTERS[d]).join('') : ''}</div></a>
       ${S.me.is_admin ? `<a class="btn sm" href="/routine/${r.id}/edit">Edit</a>` : ''}</div>`).join('') || '<p class="muted small">No routines yet. Run supabase/012_routines.sql in Supabase.</p>'}</div></div>
