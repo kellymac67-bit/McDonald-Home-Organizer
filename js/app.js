@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.5.1';
+const VERSION = '2.6.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -173,7 +173,7 @@ const routes = [
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
-  [/^\/routines$/, viewRoutines], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
+  [/^\/routines$/, viewRoutines], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -337,7 +337,11 @@ async function loadDevices() {
   S.areaLinks = al.error ? [] : al.data;
   S.devicesAt = Date.now();
 }
-const shownDevices = () => (S.devices || []).filter(d => d.enabled);
+// the car (Teslemetry) has its own Tesla page, so it stays out of Doors, Lights, alerts and room lists
+const CAR_PLATFORMS = ['teslemetry', 'tessie', 'tesla_fleet'];
+const isCar = d => CAR_PLATFORMS.includes(d.platform);
+const shownDevices = () => (S.devices || []).filter(d => d.enabled && !isCar(d));
+const carDevices = () => (S.devices || []).filter(d => d.enabled && isCar(d));
 const bridgeOnline = () => !!S.bridge?.last_seen && Date.now() - Date.parse(S.bridge.last_seen) < 3 * 60e3;
 function relTime(t) {
   if (!t) return 'never';
@@ -488,6 +492,7 @@ function thermoTarget(d) {
 function thermoText(d) {
   if (!d.state || d.state === 'unavailable' || d.state === 'unknown') return { text: 'Offline', cls: 'off' };
   const a = d.attributes || {}, act = a.hvac_action;
+  if (isCar(d)) return { text: d.state === 'off' ? 'Off' : `On · ${thermoTarget(d)}`, cls: d.state === 'off' ? '' : 'on' };
   const doing = act && act !== 'idle' && act !== 'off' ? ACTION_TEXT[act] || act : '';
   return { text: `${tdeg(a.current_temperature)} inside · ${doing ? `${doing} to ${thermoTarget(d)}` : d.state === 'off' ? 'Off' : `set ${thermoTarget(d)}`}`, cls: act === 'heating' || act === 'cooling' ? 'on' : '' };
 }
@@ -568,10 +573,10 @@ function openThermostat(d, redraw) {
       <div class="chips" style="flex-wrap:wrap">${modes.map(m => `<button class="chip" aria-pressed="${cur.state === m}" data-mode="${m}" ${can ? '' : 'disabled'}>${MODE_TEXT[m]}</button>`).join('')}
         ${ecoOk ? `<button class="chip" aria-pressed="${isEco(cur)}" data-eco ${can && cur.state !== 'off' ? '' : 'disabled'}>🍃 Eco</button>` : ''}</div>
       ${canControl() ? '' : '<p class="small muted" style="margin:0">Ask an admin to turn on <b>Can control</b> to change the thermostat.</p>'}
-      <button class="btn" id="thHist">📈 Temperature history</button>
+      ${isCar(cur) ? '' : `<button class="btn" id="thHist">📈 Temperature history</button>
       <a class="btn" href="https://home.google.com/" target="_blank" rel="noopener">🔥 Emergency heat — open Google Home</a>
-      <p class="small muted" style="margin:-4px 0 0">Google doesn't let other apps turn on emergency heat, so it opens the Google Home app. Tap the thermostat there, then Mode.</p>
-      ${'alert_low' in cur ? `<div class="lab">Phone alerts</div>
+      <p class="small muted" style="margin:-4px 0 0">Google doesn't let other apps turn on emergency heat, so it opens the Google Home app. Tap the thermostat there, then Mode.</p>`}
+      ${'alert_low' in cur && !isCar(cur) ? `<div class="lab">Phone alerts</div>
       <div class="card" style="gap:8px;padding:10px 14px">
         ${[['alert_low', '🥶 Too cold below'], ['alert_high', '🥵 Too hot above']].map(([k, label]) => `<div class="row" style="justify-content:space-between;flex-wrap:nowrap">
           <span>${label}</span>${S.me.is_admin
@@ -596,7 +601,7 @@ function openThermostat(d, redraw) {
       await thermoSend(cur, { preset_mode: want }, `Eco ${want === 'none' ? 'off' : 'on'}`); if ($('#th')) draw(); redraw?.();
     };
     $('#thDone', s).onclick = closeSheet;
-    $('#thHist', s).onclick = () => openHistory(cur);
+    if ($('#thHist', s)) $('#thHist', s).onclick = () => openHistory(cur);
     let alT;
     $$('[data-al]', s).forEach(b => b.onclick = () => {
       const k = b.dataset.al, other = k === 'alert_low' ? cur.alert_high : cur.alert_low;
@@ -1087,6 +1092,40 @@ function viewActivity(params) {
 const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = new Date(d); x.setHours(0, 0, 0, 0); const diff = Math.round((t - x) / 86400e3);
   return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : x.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }); };
 
+// ---- Tesla (the car, through Teslemetry) ----
+function carName() { const d = carDevices().find(x => x.device_name); return d?.device_name || 'Tesla'; }
+const carFind = (re, kinds) => carDevices().find(d => (!kinds || kinds.includes(d.kind)) && re.test(shortName(d)));
+function carBattery() { return carDevices().find(d => d.kind === 'sensor' && d.device_class === 'battery' && /battery/i.test(shortName(d)) && !/range|heater/i.test(shortName(d))) || carDevices().find(d => d.kind === 'sensor' && d.device_class === 'battery'); }
+function carRange() { return carFind(/^(estimate |ideal )?battery range$|^range$/i, ['sensor']) || carDevices().find(d => d.kind === 'sensor' && d.device_class === 'distance' && /range/i.test(shortName(d)) && !/ideal|estimate/i.test(shortName(d))); }
+function viewTesla() {
+  header('Tesla', { backBtn: true }); tabs('home');
+  view().innerHTML = '<div id="tv" style="display:flex;flex-direction:column;gap:16px"></div>';
+  const draw = () => {
+    const el = $('#tv'); if (!el) return;
+    const all = carDevices();
+    if (!all.length) { el.innerHTML = '<div class="card muted">The car isn\'t in the app yet. Add Teslemetry in Home Assistant and give the car the Area <b>Garage</b>.</div>'; return; }
+    const bat = carBattery(), rng = carRange(), wc = shownDevices().filter(d => d.platform === 'tesla_wall_connector');
+    const pct = bat ? parseFloat(bat.state) : NaN;
+    const ins = carFind(/inside temp/i, ['sensor']), lock = all.find(d => d.kind === 'lock' && /^lock$/i.test(shortName(d))) || all.find(d => d.kind === 'lock');
+    const controls = all.filter(d => ['lock', 'cover', 'switch', 'climate', 'light'].includes(d.kind));
+    const details = all.filter(d => ['sensor', 'binary_sensor'].includes(d.kind) && d !== bat && d !== rng).sort((a, b) => shortName(a).localeCompare(shortName(b)));
+    const row = d => devRow({ ...d, display_name: d.display_name || shortName(d) }, false);
+    el.innerHTML = `<div class="card whero" style="flex-wrap:wrap"><div class="wbig">${isNaN(pct) ? '—' : Math.round(pct) + '%'}</div>
+        <div class="grow" style="display:flex;flex-direction:column;gap:2px"><b>${esc(carName())}</b>
+          ${rng ? `<div>Range <b>${esc(devValue(rng).text)}</b></div>` : ''}
+          ${wc.length ? `<div>${esc(teslaLine(wc))}</div>` : ''}
+          ${ins ? `<div>Inside <b>${esc(devValue(ins).text)}</b>${lock ? ` · ${esc(devValue(lock).text.toLowerCase())}` : ''}</div>` : ''}
+          ${bat ? `<div class="small muted">updated ${esc(relTime(bat.last_changed))}</div>` : ''}</div>
+        ${isNaN(pct) ? '' : `<div class="batbar"><span style="width:${Math.max(2, Math.min(100, pct))}%"></span></div>`}</div>
+      ${controls.length ? `<section class="hsec"><div class="lab">Controls</div><div class="card" style="padding:2px 14px"><div class="list">${controls.map(row).join('')}</div></div></section>` : ''}
+      ${details.length ? `<details class="card"><summary class="lab" style="cursor:pointer">All readings (${details.length})</summary><div class="list">${details.map(row).join('')}</div></details>` : ''}`;
+    wireDevices(el, draw);
+  };
+  draw();
+  S.cleanup = pollDevices(draw, 15000);
+  loadDevices().then(draw).catch(() => {});
+}
+
 // ---- Routines (checklists when the Tesla is unplugged / plugged in) ----
 const CHECKS = [['boiler', 'Boiler'], ['door', 'Front door'], ['garage', 'Garage'], ['lights', 'Lights'], ['thermostat', 'Thermostat'],
   ['chickens', 'Chickens'], ['weather', 'Weather'], ['charge', 'Tesla charge']];
@@ -1145,8 +1184,10 @@ function routineCheck(key, rt) {
   }
   if (key === 'charge') {
     const W = shownDevices().filter(d => d.platform === 'tesla_wall_connector');
-    if (!W.length) return null;
-    return { icon: '⚡', title: 'Tesla', text: teslaLine(W, off), st: 'info' };
+    const bat = carBattery(), rng = carRange();
+    if (!W.length && !bat) return null;
+    const car = [bat && !off(bat) ? `${Math.round(parseFloat(bat.state))}% charged` : '', rng && !off(rng) ? `${devValue(rng).text} range` : ''].filter(Boolean).join(' · ');
+    return { icon: '⚡', title: 'Tesla', text: [car, W.length ? teslaLine(W, off) : ''].filter(Boolean).join(' · '), st: bat && parseFloat(bat.state) < 30 ? 'warn' : 'info' };
   }
   return null;
 }
@@ -1285,6 +1326,7 @@ function viewHomeDash() {
     const p = prefs();
     const parts = [statusLine()];
     const al = homeAlerts();
+    if ((S.routines || []).some(r => r.enabled)) parts.push(`<div class="chips" style="flex-wrap:wrap">${S.routines.filter(r => r.enabled).map(r => `<a class="chip" href="/routine/${r.id}">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}</a>`).join('')}${carDevices().length ? '<a class="chip" href="/tesla">⚡ Tesla</a>' : ''}</div>`);
     if (al.length) parts.push(al.map(a => `<div class="alert"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3 2 20h20L12 3z"/><path d="M12 10v4M12 17.5v.01"/></svg><div class="grow"><b>${esc(a.text)}</b>${a.sub ? `<br><span class="small">${esc(a.sub)}</span>` : ''}</div>${a.btn || ''}</div>`).join(''));
     for (const s of p.sections.filter(s => s.show)) {
       if (s.key === 'doors') {
@@ -1386,7 +1428,7 @@ function viewEditHome() {
   const draw = () => {
     const el = $('#eh'); if (!el) return;
     const p = prefs();
-    const sens = shownDevices().filter(d => ['sensor', 'binary_sensor'].includes(d.kind));
+    const sens = (S.devices || []).filter(d => d.enabled && ['sensor', 'binary_sensor'].includes(d.kind));
     const cams = shownDevices().filter(d => d.kind === 'camera');
     el.innerHTML = `<p class="small muted" style="margin:0">This is your own Home screen — other family members set up theirs.</p>
       <section class="hsec"><div class="lab">Sections</div><div class="card" style="padding:2px 14px"><div class="list">
@@ -2072,7 +2114,7 @@ function viewMore() {
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
       <a class="locrow" href="/activity"><span class="nm">Activity log</span><span class="muted">›</span></a>
-      ${(S.routines || []).filter(r => r.enabled).map(r => `<a class="locrow" href="/routine/${r.id}"><span class="nm">${r.icon === 'moon' ? '🌙' : '🚗'} ${esc(r.name)}</span><span class="muted">›</span></a>`).join('')}
+      ${carDevices().length ? `<a class="locrow" href="/tesla"><span class="nm">⚡ Tesla — ${esc(carName())}</span><span class="muted">›</span></a>` : ''}
       <a class="locrow" href="/routines"><span class="nm">Routines (Tesla checklists)</span><span class="count">${(S.routines || []).length}</span></a>
       ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
       <a class="locrow" href="#" id="exp"><span class="nm">Download everything (spreadsheet)</span><span class="muted">CSV</span></a>

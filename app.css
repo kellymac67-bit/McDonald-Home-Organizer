@@ -245,3 +245,7 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 .actrow{display:flex;align-items:center;gap:12px;padding:10px 0;border-bottom:1px solid var(--line)}
 .actrow:last-child{border-bottom:0}
 .actrow .ic{font-size:20px;width:26px;text-align:center}
+
+.batbar{flex-basis:100%;height:10px;border-radius:6px;background:var(--line);overflow:hidden;margin-top:8px}
+.batbar span{display:block;height:100%;background:#2fa84f;border-radius:6px}
+a.chip{text-decoration:none;color:inherit}

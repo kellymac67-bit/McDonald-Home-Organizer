@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.7.0';
+const VERSION = '0.7.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -175,6 +175,8 @@ async function buildCatalog() {
     else if (domain === 'input_boolean' || domain === 'fan') kind = 'switch';   // on/off helpers ("Boiler alerts") and fans (Dreo)
     else if (domain === 'sensor' && SENSOR_CLASSES.has(dc)) kind = 'sensor';
     else if (domain === 'sensor' && e.platform === 'tesla_wall_connector' && ['energy', 'power'].includes(dc)) kind = 'sensor';   // overnight charge
+    else if (domain === 'sensor' && ['teslemetry', 'tessie', 'tesla_fleet'].includes(e.platform)
+             && ['battery', 'distance', 'power', 'energy', 'speed', 'enum', 'duration', 'voltage', 'current'].includes(dc)) kind = 'sensor';   // the car: battery %, range, charging
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
     if (!kind) continue;
 
@@ -245,7 +247,7 @@ const ALERT_FILE = process.env.ALERT_FILE || '/data/temp_alerts.json';
 const notifyTargets = () => String(opts.alert_notify || 'mobile_app_km_s24_ultra').split(',').map(x => x.trim().replace(/^notify\./, '')).filter(Boolean);
 let alertsHash = '';
 async function syncTempAlerts() {
-  const want = [...catalog.values()].filter(r => r.kind === 'climate' && settings.get(r.entity_id)?.enabled)
+  const want = [...catalog.values()].filter(r => r.kind === 'climate' && settings.get(r.entity_id)?.enabled && !['teslemetry', 'tessie', 'tesla_fleet'].includes(r.platform))
     .map(r => ({ r, lo: settings.get(r.entity_id)?.alert_low, hi: settings.get(r.entity_id)?.alert_high }))
     .filter(x => x.lo != null || x.hi != null);
   const hash = JSON.stringify([want.map(x => [x.r.entity_id, x.r.name, x.lo, x.hi]), notifyTargets()]);
