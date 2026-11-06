@@ -1,5 +1,5 @@
 // Keeps the app shell available so the home-screen app opens fast. Data always comes live from Supabase.
-const CACHE = 'organizer-v26';
+const CACHE = 'organizer-v27';
 const SHELL = ['/', '/index.html', '/app.css', '/js/app.js', '/js/config.js', '/manifest.json', '/icons/icon-192.png'];
 
 self.addEventListener('install', e => {

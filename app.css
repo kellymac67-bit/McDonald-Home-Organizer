@@ -255,3 +255,15 @@ a.chip{text-decoration:none;color:inherit}
 .dimrow{flex-basis:100%;display:flex;align-items:center;gap:10px;padding:0 0 4px 52px}
 .dim{flex:1;accent-color:var(--brand);height:28px}
 .dimv{min-width:3em;text-align:right}
+
+/* color picker */
+.cdot{width:30px;height:30px;border-radius:50%;border:2px solid var(--line);flex:none;cursor:pointer;padding:0}
+.cprev{height:46px;border-radius:12px;border:1px solid var(--line);box-shadow:inset 0 0 0 2px rgba(255,255,255,.4)}
+.chip .sw{display:inline-block;width:14px;height:14px;border-radius:50%;margin-right:6px;vertical-align:-2px;border:1px solid rgba(0,0,0,.15)}
+.swgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:10px}
+.swbtn{aspect-ratio:1;border-radius:50%;border:2px solid rgba(0,0,0,.12);cursor:pointer;padding:0;display:grid;place-items:center;font-size:22px;position:relative;overflow:hidden}
+.swpick{background:conic-gradient(red,yellow,lime,cyan,blue,magenta,red)}
+.swpick input{position:absolute;inset:0;opacity:0;width:100%;height:100%;cursor:pointer}
+.htrack{-webkit-appearance:none;appearance:none;height:14px;border-radius:7px;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
+.ktrack{-webkit-appearance:none;appearance:none;height:14px;border-radius:7px;background:linear-gradient(90deg,#ffaa50,#fff4e0,#e3eeff)}
+.htrack::-webkit-slider-thumb,.ktrack::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:#fff;border:2px solid #555}

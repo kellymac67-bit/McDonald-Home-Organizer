@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.7.2';
+const VERSION = '0.7.3';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -24,7 +24,7 @@ const BINARY_CLASSES = new Set(['door', 'window', 'opening', 'garage_door', 'moi
   'cold', 'heat', 'problem', 'safety', 'lock', 'occupancy', 'presence', 'vibration', 'tamper', 'plug', 'battery_charging']);
 const KEEP_ATTRS = ['unit_of_measurement', 'device_class', 'friendly_name', 'brightness', 'battery_level', 'current_position',
   // thermostats
-  'supported_color_modes', 'current_temperature', 'temperature', 'target_temp_low', 'target_temp_high', 'hvac_action', 'hvac_modes', 'preset_mode', 'preset_modes',
+  'supported_color_modes', 'color_mode', 'hs_color', 'color_temp_kelvin', 'min_color_temp_kelvin', 'max_color_temp_kelvin', 'current_temperature', 'temperature', 'target_temp_low', 'target_temp_high', 'hvac_action', 'hvac_modes', 'preset_mode', 'preset_modes',
   'current_humidity', 'min_temp', 'max_temp', 'target_temp_step', 'fan_mode'];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -407,10 +407,14 @@ async function pollCommands() {
         } else if (c.action === 'lock' || c.action === 'unlock') {
           if (row.kind !== 'lock') throw new Error('Not a lock');
           await haCall({ type: 'call_service', domain: 'lock', service: c.action, target: { entity_id: c.entity_id } });
-        } else if (c.action === 'turn_on' && row.kind === 'light' && c.payload?.brightness_pct != null) {
-          const pct = Math.round(Number(c.payload.brightness_pct));
-          if (!(pct >= 1 && pct <= 100)) throw new Error('Brightness must be 1–100%');
-          await haCall({ type: 'call_service', domain: 'light', service: 'turn_on', service_data: { brightness_pct: pct }, target: { entity_id: c.entity_id } });
+        } else if (c.action === 'turn_on' && row.kind === 'light' && c.payload && Object.keys(c.payload).length) {
+          // dimmer / color: brightness 1–100 %, a color (hue 0–360, saturation 0–100) or a white (kelvin)
+          const p = c.payload, data = {};
+          if (p.brightness_pct != null) { const v = Math.round(Number(p.brightness_pct)); if (!(v >= 1 && v <= 100)) throw new Error('Brightness must be 1–100%'); data.brightness_pct = v; }
+          if (Array.isArray(p.hs_color)) { const [h, sat] = p.hs_color.map(Number); if (!(h >= 0 && h <= 360 && sat >= 0 && sat <= 100)) throw new Error('Bad color'); data.hs_color = [h, sat]; }
+          else if (p.color_temp_kelvin != null) { const k = Math.round(Number(p.color_temp_kelvin)); if (!(k >= 1500 && k <= 9000)) throw new Error('Bad white'); data.color_temp_kelvin = k; }
+          if (!Object.keys(data).length) throw new Error('Nothing to change');
+          await haCall({ type: 'call_service', domain: 'light', service: 'turn_on', service_data: data, target: { entity_id: c.entity_id } });
         } else {
           if (!['switch', 'light'].includes(row.kind)) throw new Error('Not a switch');
           await haCall({ type: 'call_service', domain: c.entity_id.split('.')[0], service: c.action, target: { entity_id: c.entity_id } });

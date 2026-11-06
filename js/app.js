@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.8.0';
+const VERSION = '2.9.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -421,7 +421,7 @@ function devRow(d, showRoom) {
   } else { const v = devValue(d); right = `<span class="val ${v.cls || ''}">${esc(v.text)}</span>`; }
   const hist = canChart(d) ? ` data-hist="${esc(d.entity_id)}" role="button" tabindex="0"` : '';
   const dim = dimmable(d) && d.state === 'on' && canControl()
-    ? `<div class="dimrow"><span class="small muted">🔅</span><input type="range" class="dim" min="1" max="100" step="1" value="${dimPct(d)}" data-dim="${esc(d.entity_id)}" aria-label="${esc(devName(d))} brightness"><span class="small dimv">${dimPct(d)}%</span></div>` : '';
+    ? `<div class="dimrow"><span class="small muted">🔅</span><input type="range" class="dim" min="1" max="100" step="1" value="${dimPct(d)}" data-dim="${esc(d.entity_id)}" aria-label="${esc(devName(d))} brightness"><span class="small dimv">${dimPct(d)}%</span>${colorable(d) || whiteable(d) ? `<button class="cdot" data-color="${esc(d.entity_id)}" style="background:${esc(lightCss(d))}" aria-label="${esc(devName(d))} color"></button>` : ''}</div>` : '';
   return `<div class="devrow${hist ? ' tapable' : ''}${dim ? ' hasdim' : ''}"${hist}><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}${dim}</div>`;
 }
 // Dimmers: lights Home Assistant says can change brightness (not plain on/off plugs)
@@ -429,6 +429,65 @@ function dimmable(d) {
   if (d.kind !== 'light') return false;
   const m = d.attributes?.supported_color_modes;
   return Array.isArray(m) ? m.some(x => x !== 'onoff') : d.attributes?.brightness != null;
+}
+const COLOR_MODES = ['hs', 'rgb', 'xy', 'rgbw', 'rgbww'];
+const colorable = d => (d.attributes?.supported_color_modes || []).some(m => COLOR_MODES.includes(m));
+const whiteable = d => (d.attributes?.supported_color_modes || []).includes('color_temp');
+// HSV → CSS so the little dot shows the bulb's current color
+function hsToHex(h, s, v = 100) {
+  s /= 100; v /= 100; const f = n => { const k = (n + h / 60) % 6; return v - v * s * Math.max(0, Math.min(k, 4 - k, 1)); };
+  return '#' + [f(5), f(3), f(1)].map(x => Math.round(x * 255).toString(16).padStart(2, '0')).join('');
+}
+function hexToHs(hex) {
+  const [r, g, b] = [1, 3, 5].map(i => parseInt(hex.slice(i, i + 2), 16) / 255), mx = Math.max(r, g, b), mn = Math.min(r, g, b), d = mx - mn;
+  let h = 0; if (d) h = mx === r ? ((g - b) / d) % 6 : mx === g ? (b - r) / d + 2 : (r - g) / d + 4;
+  return [Math.round((h * 60 + 360) % 360), Math.round(mx ? d / mx * 100 : 0)];
+}
+function kelvinHex(k) { const t = Math.min(1, Math.max(0, (k - 2000) / 4500)); const mix = (a, b) => Math.round(a + (b - a) * t); return `rgb(${mix(255, 235)},${mix(170, 240)},${mix(80, 255)})`; }
+function lightCss(d) {
+  const a = d.attributes || {};
+  if (a.color_mode === 'color_temp' && a.color_temp_kelvin) return kelvinHex(a.color_temp_kelvin);
+  if (Array.isArray(a.hs_color)) return hsToHex(+a.hs_color[0], +a.hs_color[1]);
+  return '#ffe7a8';
+}
+const SWATCHES = [['Red', 0, 100], ['Orange', 25, 100], ['Yellow', 50, 100], ['Green', 120, 100], ['Teal', 170, 100], ['Blue', 225, 100], ['Purple', 275, 100], ['Pink', 320, 70]];
+const WHITES = [['Candle', 2200], ['Warm', 2700], ['Soft', 3000], ['Neutral', 4000], ['Daylight', 5500]];
+function openColor(d, redraw) {
+  if (!d) return;
+  const a0 = d.attributes || {}, kmin = +a0.min_color_temp_kelvin || 2500, kmax = +a0.max_color_temp_kelvin || 6500;
+  const s = sheet(`<h3>${esc(devName(d))}</h3>
+    <div class="cprev" id="cprev"></div>
+    <div class="lab">Brightness</div>
+    <div class="dimrow" style="padding:0"><span>🔅</span><input type="range" class="dim" id="cb" min="1" max="100" value="${dimPct(d)}"><span class="small dimv" id="cbv">${dimPct(d)}%</span></div>
+    ${whiteable(d) ? `<div class="lab">White</div>
+      <div class="chips" style="flex-wrap:wrap">${WHITES.filter(([, k]) => k >= kmin - 200 && k <= kmax + 200).map(([n, k]) => `<button class="chip" data-k="${k}"><span class="sw" style="background:${kelvinHex(k)}"></span>${n}</button>`).join('')}</div>
+      <input type="range" class="dim ktrack" id="ck" min="${kmin}" max="${kmax}" step="50" value="${a0.color_temp_kelvin || 2700}" aria-label="Warm to cool">
+      <div class="row small muted" style="justify-content:space-between;margin-top:-6px"><span>Warm</span><span>Cool</span></div>` : ''}
+    ${colorable(d) ? `<div class="lab">Color</div>
+      <div class="swgrid">${SWATCHES.map(([n, h, sat]) => `<button class="swbtn" data-h="${h}" data-s="${sat}" style="background:${hsToHex(h, sat)}" aria-label="${n}"></button>`).join('')}
+        <label class="swbtn swpick" aria-label="Any color">🎨<input type="color" id="cpick" value="${Array.isArray(a0.hs_color) ? hsToHex(+a0.hs_color[0], +a0.hs_color[1]) : '#ff8800'}"></label></div>
+      <input type="range" class="dim htrack" id="ch" min="0" max="359" value="${Array.isArray(a0.hs_color) ? Math.round(a0.hs_color[0]) : 30}" aria-label="Color">` : ''}
+    <button class="btn" id="cDone">Done</button>`);
+  const prev = () => { const cur = S.devices.find(x => x.entity_id === d.entity_id) || d; $('#cprev', s).style.background = lightCss(cur); };
+  prev();
+  let t, pend = {};
+  const send = (patch, now) => {
+    Object.assign(pend, patch);
+    if (patch.hs_color) delete pend.color_temp_kelvin; if (patch.color_temp_kelvin) delete pend.hs_color;
+    const cur = S.devices.find(x => x.entity_id === d.entity_id) || d;
+    cur.attributes = { ...(cur.attributes || {}), ...(patch.brightness_pct ? { brightness: Math.round(patch.brightness_pct * 2.55) } : {}),
+      ...(patch.hs_color ? { hs_color: patch.hs_color, color_mode: 'hs' } : {}), ...(patch.color_temp_kelvin ? { color_temp_kelvin: patch.color_temp_kelvin, color_mode: 'color_temp' } : {}) };
+    prev(); clearTimeout(t);
+    t = setTimeout(async () => { const pay = pend; pend = {}; await sendRaw({ entity_id: d.entity_id, action: 'turn_on', payload: pay }, `${devName(d)} changed`); redraw?.(); }, now ? 0 : 500);
+  };
+  $('#cb', s).oninput = e => { $('#cbv', s).textContent = `${e.target.value}%`; };
+  $('#cb', s).onchange = e => send({ brightness_pct: +e.target.value }, true);
+  $$('[data-k]', s).forEach(b => b.onclick = () => { if ($('#ck', s)) $('#ck', s).value = b.dataset.k; send({ color_temp_kelvin: +b.dataset.k }, true); });
+  const ck = $('#ck', s); if (ck) ck.onchange = () => send({ color_temp_kelvin: +ck.value }, true);
+  $$('[data-h]', s).forEach(b => b.onclick = () => { if ($('#ch', s)) $('#ch', s).value = b.dataset.h; send({ hs_color: [+b.dataset.h, +b.dataset.s] }, true); });
+  const ch = $('#ch', s); if (ch) ch.onchange = () => send({ hs_color: [+ch.value, 100] }, true);
+  const pk = $('#cpick', s); if (pk) pk.oninput = () => send({ hs_color: hexToHs(pk.value) });
+  $('#cDone', s).onclick = closeSheet;
 }
 const dimPct = d => d.attributes?.brightness != null ? Math.max(1, Math.round(+d.attributes.brightness / 2.55)) : 100;
 const KIND_ORDER = { climate: 0, lock: 0, cover: 0, switch: 1, light: 1, binary_sensor: 3, sensor: 4 };
@@ -440,6 +499,7 @@ function devicesBlock(list, { showRoom = true } = {}) {
 }
 function wireDevices(root, redraw) {
   wireHistory(root);
+  $$('[data-color]', root).forEach(b => b.onclick = e => { e.stopPropagation(); openColor(S.devices.find(x => x.entity_id === b.dataset.color), redraw); });
   $$('[data-dim]', root).forEach(r => {
     const label = r.parentElement.querySelector('.dimv');
     r.oninput = () => { label.textContent = `${r.value}%`; };
