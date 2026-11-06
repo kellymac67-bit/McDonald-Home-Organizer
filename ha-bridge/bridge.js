@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.7.1';
+const VERSION = '0.7.2';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -24,7 +24,7 @@ const BINARY_CLASSES = new Set(['door', 'window', 'opening', 'garage_door', 'moi
   'cold', 'heat', 'problem', 'safety', 'lock', 'occupancy', 'presence', 'vibration', 'tamper', 'plug', 'battery_charging']);
 const KEEP_ATTRS = ['unit_of_measurement', 'device_class', 'friendly_name', 'brightness', 'battery_level', 'current_position',
   // thermostats
-  'current_temperature', 'temperature', 'target_temp_low', 'target_temp_high', 'hvac_action', 'hvac_modes', 'preset_mode', 'preset_modes',
+  'supported_color_modes', 'current_temperature', 'temperature', 'target_temp_low', 'target_temp_high', 'hvac_action', 'hvac_modes', 'preset_mode', 'preset_modes',
   'current_humidity', 'min_temp', 'max_temp', 'target_temp_step', 'fan_mode'];
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -407,6 +407,10 @@ async function pollCommands() {
         } else if (c.action === 'lock' || c.action === 'unlock') {
           if (row.kind !== 'lock') throw new Error('Not a lock');
           await haCall({ type: 'call_service', domain: 'lock', service: c.action, target: { entity_id: c.entity_id } });
+        } else if (c.action === 'turn_on' && row.kind === 'light' && c.payload?.brightness_pct != null) {
+          const pct = Math.round(Number(c.payload.brightness_pct));
+          if (!(pct >= 1 && pct <= 100)) throw new Error('Brightness must be 1–100%');
+          await haCall({ type: 'call_service', domain: 'light', service: 'turn_on', service_data: { brightness_pct: pct }, target: { entity_id: c.entity_id } });
         } else {
           if (!['switch', 'light'].includes(row.kind)) throw new Error('Not a switch');
           await haCall({ type: 'call_service', domain: c.entity_id.split('.')[0], service: c.action, target: { entity_id: c.entity_id } });

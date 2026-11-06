@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.7.0';
+const VERSION = '2.8.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -420,8 +420,17 @@ function devRow(d, showRoom) {
     right = `<span class="row" style="gap:6px;flex-wrap:nowrap"><span class="val ${v.cls || ''}">${esc(v.text)}</span><button class="btn sm" data-thermo="${esc(d.entity_id)}">${canControl() ? 'Adjust' : 'View'}</button></span>`;
   } else { const v = devValue(d); right = `<span class="val ${v.cls || ''}">${esc(v.text)}</span>`; }
   const hist = canChart(d) ? ` data-hist="${esc(d.entity_id)}" role="button" tabindex="0"` : '';
-  return `<div class="devrow${hist ? ' tapable' : ''}"${hist}><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}</div>`;
+  const dim = dimmable(d) && d.state === 'on' && canControl()
+    ? `<div class="dimrow"><span class="small muted">🔅</span><input type="range" class="dim" min="1" max="100" step="1" value="${dimPct(d)}" data-dim="${esc(d.entity_id)}" aria-label="${esc(devName(d))} brightness"><span class="small dimv">${dimPct(d)}%</span></div>` : '';
+  return `<div class="devrow${hist ? ' tapable' : ''}${dim ? ' hasdim' : ''}"${hist}><span class="ic">${devIcon(d)}</span><div class="grow"><div class="nm">${esc(devName(d))}</div>${sub ? `<div class="small muted">${esc(sub)}</div>` : ''}</div>${right}${dim}</div>`;
 }
+// Dimmers: lights Home Assistant says can change brightness (not plain on/off plugs)
+function dimmable(d) {
+  if (d.kind !== 'light') return false;
+  const m = d.attributes?.supported_color_modes;
+  return Array.isArray(m) ? m.some(x => x !== 'onoff') : d.attributes?.brightness != null;
+}
+const dimPct = d => d.attributes?.brightness != null ? Math.max(1, Math.round(+d.attributes.brightness / 2.55)) : 100;
 const KIND_ORDER = { climate: 0, lock: 0, cover: 0, switch: 1, light: 1, binary_sensor: 3, sensor: 4 };
 function devicesBlock(list, { showRoom = true } = {}) {
   const cams = list.filter(d => d.kind === 'camera' && canCams());
@@ -431,6 +440,17 @@ function devicesBlock(list, { showRoom = true } = {}) {
 }
 function wireDevices(root, redraw) {
   wireHistory(root);
+  $$('[data-dim]', root).forEach(r => {
+    const label = r.parentElement.querySelector('.dimv');
+    r.oninput = () => { label.textContent = `${r.value}%`; };
+    r.onclick = e => e.stopPropagation();
+    r.onchange = async () => {
+      const d = S.devices.find(x => x.entity_id === r.dataset.dim); if (!d) return;
+      d.attributes = { ...(d.attributes || {}), brightness: Math.round(+r.value * 2.55) };
+      d.dimHold = Date.now() + 15000;
+      await sendRaw({ entity_id: d.entity_id, action: 'turn_on', payload: { brightness_pct: +r.value } }, `${devName(d)} ${r.value}%`);
+    };
+  });
   $$('[data-thermo]', root).forEach(b => b.onclick = () => openThermostat(S.devices.find(d => d.entity_id === b.dataset.thermo), redraw));
   $$('[data-tq]', root).forEach(b => b.onclick = () => {
     const d = S.devices.find(x => x.entity_id === b.dataset.tq); if (!d) return;
