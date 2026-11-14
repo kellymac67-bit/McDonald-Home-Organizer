@@ -22,3 +22,11 @@ Connects Home Assistant to the McDonald Home Organizer app **without opening any
 
 ## Checking it works
 Open the **Log** tab. You should see *Signed in to the app database*, *Connected to Home Assistant* and a *Device list:* line with counts.
+
+
+## Monnit sensors without the internet (Ethernet Gateway 4)
+If your Monnit gateway is an **ALTA Ethernet Gateway 4**, the bridge can read the sensors straight from it over your home network every minute. It keeps working when the internet is down.
+1. In iMonnit, go to **Gateways**, pick your gateway, then **Settings → Interface** and turn on **Activate MODBUS Interface**. Save; it takes effect at the gateway's next check-in.
+2. Give the gateway a fixed address. In the Orbi, use **Address Reservation**.
+3. On the bridge's **Configuration** tab, put the gateway's IP address in **monnit_gateway_ip**, then save and restart.
+For the first 15–30 minutes the bridge learns how to read each sensor by comparing the gateway's raw numbers with iMonnit's readings. After that it uses the local numbers whenever they're newer. Water sensors (on/off) still come from iMonnit for now.

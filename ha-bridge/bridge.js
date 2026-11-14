@@ -4,10 +4,11 @@
 //  • Uploads camera snapshots (every N minutes, on motion, or when asked from the app)
 //  • Carries out commands from the app (switch/light on/off/toggle, take snapshot)
 import fs from 'node:fs';
+import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.8.0';
+const VERSION = '0.9.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -586,6 +587,98 @@ function parseMonnit(m) {
       ...(unit ? { unit_of_measurement: unit } : {}), ...(dc ? { device_class: dc } : {}), friendly_name: name },
   };
 }
+// ---- Local readings straight from the Ethernet Gateway 4 (Modbus TCP, no internet needed) ----
+// The gateway keeps a 16-register block per sensor: ID, type, data age, battery, signal, Data0–7.
+// Monnit doesn't publish how Data0–7 are scaled for each sensor type, so the bridge learns it: it compares the raw
+// registers with iMonnit's reading for the same moment until one register + scale matches 3 times, then remembers it.
+
+const GW_IP = String(opts.monnit_gateway_ip || '').trim();
+const MODBUS_MAP_FILE = process.env.MODBUS_MAP_FILE || '/data/monnit_modbus_map.json';
+let modbusMap = {}; try { modbusMap = JSON.parse(fs.readFileSync(MODBUS_MAP_FILE, 'utf8')); } catch {}
+const cloudById = new Map();     // Monnit sensor ID → latest row from iMonnit
+const localById = new Map();     // Monnit sensor ID → { state, at } read from the gateway
+let modbusTid = 0, modbusNote = '';
+function modbusRead(host, port, addr, count) {
+  return new Promise((resolve, reject) => {
+    const tid = (modbusTid = (modbusTid + 1) & 0xffff), req = Buffer.alloc(12);
+    req.writeUInt16BE(tid, 0); req.writeUInt16BE(0, 2); req.writeUInt16BE(6, 4); req.writeUInt8(1, 6);
+    req.writeUInt8(3, 7); req.writeUInt16BE(addr, 8); req.writeUInt16BE(count, 10);
+    const sock = net.connect({ host, port }); let buf = Buffer.alloc(0), done = false;
+    const end = (err, val) => { if (done) return; done = true; sock.destroy(); err ? reject(err) : resolve(val); };
+    sock.setTimeout(8000, () => end(new Error('gateway did not answer')));
+    sock.on('error', e => end(e));
+    sock.on('connect', () => sock.write(req));
+    sock.on('data', d => {
+      buf = Buffer.concat([buf, d]);
+      if (buf.length < 9) return;
+      if (buf.readUInt8(7) & 0x80) return end(new Error(`gateway refused (code ${buf.readUInt8(8)})`));
+      const n = buf.readUInt8(8); if (buf.length < 9 + n) return;
+      end(null, Array.from({ length: n / 2 }, (_, i) => buf.readUInt16BE(9 + i * 2)));
+    });
+  });
+}
+const s16 = v => v > 32767 ? v - 65536 : v;
+const c2f = c => c * 9 / 5 + 32;
+function modbusCandidates(data, cloud, unit) {
+  const out = [];
+  data.forEach((raw, i) => { for (const signed of [false, true]) for (const div of [1, 10, 100, 1000]) for (const f of unit === '°F' ? [false, true] : [false]) {
+    let v = (signed ? s16(raw) : raw) / div; if (f) v = c2f(v);
+    if (Math.abs(v - cloud) <= Math.max(0.15, Math.abs(cloud) * 0.005)) out.push(`${i}|${signed ? 1 : 0}|${div}|${f ? 1 : 0}`);
+  } });
+  return out;
+}
+function modbusValue(key, data) {
+  const [i, signed, div, f] = key.split('|').map(Number);
+  let v = (signed ? s16(data[i]) : data[i]) / div; if (f) v = c2f(v);
+  return v;
+}
+async function modbusRound() {
+  if (!GW_IP) return;
+  const [host, port] = GW_IP.includes(':') ? [GW_IP.split(':')[0], +GW_IP.split(':')[1]] : [GW_IP, 502];
+  const head = await modbusRead(host, port, 0, 5);
+  const count = Math.min(Math.max(head[4] || 0, 1), 64);
+  const regs = [];
+  for (let slot = 0; slot < count + 4; slot += 7) regs.push(...await modbusRead(host, port, 100 + slot * 16, 16 * 7));
+  let seen = 0, learned = 0, applied = 0;
+  for (let b = 0; b + 16 <= regs.length; b += 16) {
+    const blk = regs.slice(b, b + 16), id = blk[0] * 65536 + blk[1];
+    if (!id || !blk[4]) continue;
+    seen++;
+    const age = blk[3], data = blk.slice(8, 16), at = Date.now() - age * 1000, row = cloudById.get(String(id));
+    if (!row || row.kind !== 'sensor') continue;
+    const m = modbusMap[id] || (modbusMap[id] = { tries: {} });
+    if (!m.key) {
+      // learn only when iMonnit's reading is the same one the gateway holds (taken within ~90 s of each other)
+      const cloud = parseFloat(row.state), cAt = Date.parse(row.last_changed || 0);
+      if (!isNaN(cloud) && Math.abs(cAt - at) < 90e3 && m.lastLearnAt !== cAt) {
+        m.lastLearnAt = cAt;
+        for (const k of modbusCandidates(data, cloud, row.unit)) m.tries[k] = (m.tries[k] || 0) + 1;
+        const best = Object.entries(m.tries).sort((x, y) => y[1] - x[1])[0];
+        if (best && best[1] >= 3) { m.key = best[0]; m.unit = row.unit; delete m.tries; log(`Monnit gateway: learned how to read ${row.name} locally`); fs.writeFileSync(MODBUS_MAP_FILE, JSON.stringify(modbusMap)); }
+      }
+      continue;
+    }
+    learned++;
+    const v = modbusValue(m.key, data), dec = (String(row.state).split('.')[1] || '').length;
+    const state = v.toFixed(Math.min(dec, 2));
+    const prev = localById.get(String(id));
+    if (prev && prev.at >= at - 1000) continue;
+    localById.set(String(id), { state, at, battery: blk[6] / 100 });
+    if (Date.parse(row.last_changed || 0) >= at) continue;            // iMonnit already has this one
+    applied++;
+    const upd = { ...row, state, last_changed: new Date(at).toISOString(), attributes: { ...row.attributes, source: 'Monnit gateway (local)' } };
+    cloudById.set(String(id), upd);
+    try {
+      await fetch(`${HA_API}/states/${row.entity_id}`, { method: 'POST', signal: AbortSignal.timeout(10e3),
+        headers: { Authorization: `Bearer ${TOKEN}`, 'Content-Type': 'application/json' },
+        body: JSON.stringify({ state, attributes: { ...row.attributes, source: 'Monnit gateway (local)' } }) });
+    } catch (e) { log('Could not update', row.entity_id, 'in Home Assistant:', e.message); }
+    sb.from('ha_devices').update({ state, last_changed: upd.last_changed, attributes: upd.attributes }).eq('entity_id', row.entity_id).then(() => {}, () => {});
+  }
+  const note = `Monnit gateway: ${seen} sensors, ${learned} read locally`;
+  if (note !== modbusNote) { modbusNote = note; log(note + (learned < seen ? ' (the rest are still being learned — takes about 15–30 minutes)' : '')); }
+}
+
 let monnitCount = -1;
 async function monnitRound() {
   if (!useMonnit) return;
@@ -596,6 +689,12 @@ async function monnitRound() {
   const j = await r.json();
   if (!Array.isArray(j.Result)) throw new Error('iMonnit: ' + (typeof j.Result === 'string' ? j.Result : 'unexpected answer — check the API keys'));
   const rows = j.Result.map(parseMonnit);
+  // a newer local reading from the gateway wins over an older iMonnit one
+  for (const x of rows) {
+    const id = String(x.attributes.monnit_id), loc = localById.get(id);
+    if (loc && loc.at > Date.parse(x.last_changed || 0)) { x.state = loc.state; x.last_changed = new Date(loc.at).toISOString(); x.attributes.source = 'Monnit gateway (local)'; }
+    cloudById.set(id, x);
+  }
   if (hasPlatform === null) hasPlatform = !(await sb.from('ha_devices').select('platform').limit(1)).error;
   ok(await sb.from('ha_devices').upsert(rows, { onConflict: 'entity_id' }), 'Sending Monnit sensors');
   const ex = await sb.from('ha_devices').select('entity_id');
@@ -847,5 +946,8 @@ every(30e3, loadScenes);
 every(30e3, loadRoutines);
 setTimeout(() => loadRoutines().catch(e => log('Routines:', e.message)), 8000);
 if (useMonnit) { monnitRound().catch(e => log('Monnit:', e.message)); every(5 * 60e3, monnitRound); }
+if (GW_IP) { let fails = 0;
+  every(60e3, () => modbusRound().then(() => { fails = 0; }, e => { if (++fails === 3) log(`Monnit gateway at ${GW_IP}: ${e.message} — is the MODBUS interface turned on and the IP right?`); }));
+  setTimeout(() => modbusRound().catch(e => log(`Monnit gateway at ${GW_IP}:`, e.message)), 15e3); }
 else log('Monnit not set up (add the iMonnit API key ID and secret on the Configuration tab to turn it on)');
 heartbeat().catch(() => {});
