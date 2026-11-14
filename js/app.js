@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.10.1';
+const VERSION = '2.10.2';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -356,7 +356,7 @@ const devName = d => d.display_name || (d.platform === 'generac' ? 'Generator ' 
 // name without the device's own name in front ("Tallman WS Wind Speed" → "Wind Speed")
 const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
 const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉', climate: '🌡️' };
-function genBinaryText(d) { return d.state === 'on' ? { text: 'Warning', cls: 'alarm' } : d.state === 'off' ? { text: 'OK', cls: '' } : null; }
+function genBinaryText(d) { return d.state === 'on' ? (/show_warning/.test(d.entity_id) ? { text: 'Reminder', cls: 'warn' } : { text: 'Warning', cls: 'alarm' }) : d.state === 'off' ? { text: 'OK', cls: '' } : null; }
 function devIcon(d) {
   if (d.platform === 'generac') return /batter/.test(d.entity_id) ? '🔋' : /status/.test(d.entity_id) ? '⚙️' : /warning|alarm/.test(d.entity_id) ? '⚠️' : '🔌';
   if (d.entity_id.startsWith('input_boolean.')) return '🔔';
@@ -1186,15 +1186,16 @@ function genState() {
   const batt = G.find(d => d.kind === 'sensor' && /batter/.test(d.entity_id));
   const warn = G.filter(d => d.kind === 'binary_sensor' && /warning|alarm|fault|maintenance/.test(d.entity_id) && d.state === 'on');
   const st = String(status?.state || 'unknown'), low = st.toLowerCase(), v = parseFloat(batt?.state);
-  const cls = warn.length || /warning|alarm|fault|communication|stopped|^off/.test(low) || v < 12.2 ? 'bad' : /running|exercis/.test(low) ? 'run' : /ready/.test(low) ? 'ok' : '';
+  // Mobile Link's "show warning" flag is usually a maintenance reminder; real faults come through the status
+  const cls = /warning|alarm|fault|communication|stopped|^off/.test(low) || v < 12.2 ? 'bad' : /running|exercis/.test(low) ? 'run' : warn.length ? 'due' : /ready/.test(low) ? 'ok' : '';
   return { G, status, batt, warn, st, v, cls };
 }
 function genTile() {
   const g = genState(); if (!g) return '';
-  const icon = g.cls === 'run' ? '⚡' : g.cls === 'bad' ? '⚠️' : '🔌';
+  const icon = g.cls === 'run' ? '⚡' : g.cls === 'bad' ? '⚠️' : g.cls === 'due' ? '🔧' : '🔌';
   return `<div class="card gtile ${g.cls}"><button class="tmain" id="genOpen"><span class="gico">${icon}</span>
     <span class="grow" style="min-width:0;text-align:left"><b>Generator</b><br><span class="small">${esc(['unknown', 'unavailable'].includes(g.st) ? 'No report from Mobile Link' : g.st)}${isNaN(g.v) ? '' : ` · battery ${g.v.toFixed(1)} V`}</span>
-      ${g.warn.length ? `<br><span class="small gwarn">⚠️ Mobile Link is showing a warning — open the Mobile Link app for details</span>` : ''}</span><span class="muted">›</span></button></div>`;
+      ${g.warn.length ? `<br><span class="small gwarn">🔧 Maintenance reminder — see the Mobile Link app</span>` : ''}</span><span class="muted">›</span></button></div>`;
 }
 function openGenerator() {
   const g = genState(); if (!g) return;
