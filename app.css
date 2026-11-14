@@ -214,7 +214,7 @@ mark{background:color-mix(in srgb,var(--accent) 35%,transparent);color:inherit;b
 /* thermostat */
 .ttile{display:flex;flex-direction:column;gap:10px;margin-bottom:10px}
 .ttile.heat{border-color:#e8833a}.ttile.cool{border-color:#3a8be8}
-.ttile .tmain{display:flex;align-items:center;gap:14px;background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;width:100%}
+.ttile .tmain,.gtile .tmain{display:flex;align-items:center;gap:14px;background:none;border:0;padding:0;color:inherit;font:inherit;cursor:pointer;width:100%}
 .tbig{font-size:40px;font-weight:700;line-height:1;min-width:2.2em}
 .ttile.heat .tbig{color:#d4651c}.ttile.cool .tbig{color:#2a72c8}
 .tq{display:flex;align-items:center;justify-content:center;gap:16px}
@@ -267,3 +267,9 @@ a.chip{text-decoration:none;color:inherit}
 .htrack{-webkit-appearance:none;appearance:none;height:14px;border-radius:7px;background:linear-gradient(90deg,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)}
 .ktrack{-webkit-appearance:none;appearance:none;height:14px;border-radius:7px;background:linear-gradient(90deg,#ffaa50,#fff4e0,#e3eeff)}
 .htrack::-webkit-slider-thumb,.ktrack::-webkit-slider-thumb{-webkit-appearance:none;width:26px;height:26px;border-radius:50%;background:#fff;border:2px solid #555}
+
+/* generator */
+.gtile{margin-bottom:10px}
+.gtile .gico{font-size:30px;width:1.6em;text-align:center}
+.gtile.ok{border-color:#2fa84f}.gtile.run{border-color:#e8833a}.gtile.bad{border-color:#d33}
+.gtile.bad .small{color:#c22;font-weight:600}.gtile.run .small{color:#c25f12;font-weight:600}

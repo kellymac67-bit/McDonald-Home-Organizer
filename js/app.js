@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.9.0';
+const VERSION = '2.10.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -356,6 +356,7 @@ const devName = d => d.display_name || d.name.replace(/\s+live view$/i, '').trim
 const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
 const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉', climate: '🌡️' };
 function devIcon(d) {
+  if (d.platform === 'generac') return /batter/.test(d.entity_id) ? '🔋' : /status/.test(d.entity_id) ? '⚙️' : /warning|alarm/.test(d.entity_id) ? '⚠️' : '🔌';
   if (d.entity_id.startsWith('input_boolean.')) return '🔔';
   if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
   if (d.kind === 'binary_sensor') return { moisture: '💧', door: '🚪', window: '🪟', garage_door: '🚗', opening: '🚪', motion: '🏃', smoke: '🔥', gas: '⚠️' }[d.device_class] || '◉';
@@ -499,6 +500,7 @@ function devicesBlock(list, { showRoom = true } = {}) {
 }
 function wireDevices(root, redraw) {
   wireHistory(root);
+  const go = $('#genOpen', root); if (go) go.onclick = openGenerator;
   $$('[data-color]', root).forEach(b => b.onclick = e => { e.stopPropagation(); openColor(S.devices.find(x => x.entity_id === b.dataset.color), redraw); });
   $$('[data-dim]', root).forEach(r => {
     const label = r.parentElement.querySelector('.dimv');
@@ -1172,6 +1174,34 @@ function viewActivity(params) {
 const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = new Date(d); x.setHours(0, 0, 0, 0); const diff = Math.round((t - x) / 86400e3);
   return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : x.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }); };
 
+// ---- Generator (Generac Mobile Link) ----
+const genDevices = () => shownDevices().filter(d => d.platform === 'generac');
+const genLabel = d => d.display_name || String(d.name || d.entity_id).replace(/^(sensor|binary_sensor)\./, '').replace(/^generac[_ ]?\d*[_ ]?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim() || 'Generator';
+function genState() {
+  const G = genDevices(); if (!G.length) return null;
+  const status = G.find(d => d.kind === 'sensor' && /_status$/.test(d.entity_id)) || G.find(d => d.kind === 'sensor' && /status/.test(d.entity_id));
+  const batt = G.find(d => d.kind === 'sensor' && /batter/.test(d.entity_id));
+  const warn = G.filter(d => d.kind === 'binary_sensor' && /warning|alarm|fault|maintenance/.test(d.entity_id) && d.state === 'on');
+  const st = String(status?.state || 'unknown'), low = st.toLowerCase(), v = parseFloat(batt?.state);
+  const cls = warn.length || /warning|alarm|fault|communication|stopped|^off/.test(low) || v < 12.2 ? 'bad' : /running|exercis/.test(low) ? 'run' : /ready/.test(low) ? 'ok' : '';
+  return { G, status, batt, warn, st, v, cls };
+}
+function genTile() {
+  const g = genState(); if (!g) return '';
+  const icon = g.cls === 'run' ? '⚡' : g.cls === 'bad' ? '⚠️' : '🔌';
+  return `<div class="card gtile ${g.cls}"><button class="tmain" id="genOpen"><span class="gico">${icon}</span>
+    <span class="grow" style="min-width:0;text-align:left"><b>Generator</b><br><span class="small">${esc(['unknown', 'unavailable'].includes(g.st) ? 'No report from Mobile Link' : g.st)}${isNaN(g.v) ? '' : ` · battery ${g.v.toFixed(1)} V`}${g.warn.length ? ` · ${g.warn.length} warning${g.warn.length > 1 ? 's' : ''}` : ''}</span></span><span class="muted">›</span></button></div>`;
+}
+function openGenerator() {
+  const g = genState(); if (!g) return;
+  const order = d => d === g.status ? 0 : d === g.batt ? 1 : d.kind === 'binary_sensor' ? 2 : 3;
+  const rows = g.G.slice().sort((a, b) => order(a) - order(b)).map(d => devRow({ ...d, display_name: genLabel(d) }, false)).join('');
+  const s = sheet(`<h3>Generator</h3><div class="card" style="padding:2px 14px"><div class="list">${rows}</div></div>
+    <p class="small muted" style="margin:0">From Generac Mobile Link (updates every few minutes, needs the internet). You'll get a phone alert when it starts running, stops, has a warning, or the battery gets low. Tap the battery to see its history.</p>
+    <button class="btn" id="gDone">Done</button>`);
+  wireHistory(s); $('#gDone', s).onclick = closeSheet;
+}
+
 // ---- Tesla (the car, through Teslemetry) ----
 function carName() { const d = carDevices().find(x => x.device_name); return d?.device_name || 'Tesla'; }
 const carFind = (re, kinds) => carDevices().find(d => (!kinds || kinds.includes(d.kind)) && re.test(shortName(d)));
@@ -1420,7 +1450,7 @@ function viewHomeDash() {
         const list = p.glance.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
         const ot = outdoorTemp(), wind = weatherDevices().find(d => /wind.*speed|^wind$/i.test(devName(d)));
         const wbtn = weatherDevices().length ? `<a class="wbtn" href="/weather"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/></svg><span class="grow"><b>Weather</b>${ot ? `<br><span class="small">${esc(devValue(ot).text)}${wind ? ` · wind ${esc(devValue(wind).text)}` : ''}</span>` : ''}</span><span aria-hidden="true">›</span></a>` : '';
-        const thermos = shownDevices().filter(d => d.kind === 'climate').map(thermoTile).join('');
+        const thermos = shownDevices().filter(d => d.kind === 'climate').map(thermoTile).join('') + genTile();
         if (list.length || wbtn || thermos) parts.push(`<section class="hsec"><div class="lab">At a glance</div>${thermos}${list.length ? `<div class="card glance" style="grid-template-columns:repeat(${Math.min(list.length, 4)},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const num = d.kind === 'sensor' && !isNaN(n) && d.device_class !== 'timestamp';
           const big = num ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${/inhg/i.test(u) ? Math.round(n * 100) / 100 : Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}`) : v.text;
           const unit = num && !deg && !pct && u ? `<span class="gu">${esc(u)}</span>` : '';

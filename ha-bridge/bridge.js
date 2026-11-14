@@ -7,7 +7,7 @@ import fs from 'node:fs';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.7.3';
+const VERSION = '0.8.0';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -178,6 +178,9 @@ async function buildCatalog() {
     else if (domain === 'sensor' && ['teslemetry', 'tessie', 'tesla_fleet'].includes(e.platform)
              && ['battery', 'distance', 'power', 'energy', 'speed', 'enum', 'duration', 'voltage', 'current'].includes(dc)) kind = 'sensor';   // the car: battery %, range, charging
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
+    // the generator (Generac Mobile Link): status, battery, run hours, warnings — not its address / serial / model
+    else if (e.platform === 'generac' && domain === 'binary_sensor') kind = 'binary_sensor';
+    else if (e.platform === 'generac' && domain === 'sensor' && !/address|activation|serial|model|dealer|panel|device_type|_id$|lat|lon/i.test(e.entity_id)) kind = 'sensor';
     if (!kind) continue;
 
     rows.set(e.entity_id, {
@@ -239,6 +242,7 @@ async function loadSettings() {
   if (!r || r.error) { if (r?.error && /alert_/.test(r.error.message)) hasAlerts = false; r = await sb.from('ha_devices').select('entity_id, enabled, snapshot_minutes'); }
   if (ok(r, 'Reading device settings')) settings = new Map(r.data.map(d => [d.entity_id, d]));
   if (haReady) await syncTempAlerts().catch(e => log("Couldn't save thermostat alerts into Home Assistant:", e.message));
+  if (haReady) await syncGeneratorAlerts().catch(e => log("Couldn't save generator alerts into Home Assistant:", e.message));
 }
 
 // ---------------------------------------------------------------- Thermostat alerts
@@ -719,6 +723,45 @@ async function recordReadings() {
 async function cleanupHistory() {
   if (hasReadings) await sb.from('ha_readings').delete().lt('at', new Date(Date.now() - 90 * 86400e3).toISOString());
   if (hasActivity) await sb.from('ha_activity').delete().lt('at', new Date(Date.now() - 180 * 86400e3).toISOString());
+}
+
+// ---------------------------------------------------------------- Generator alerts
+// Phone alerts from the Generac: running (power is probably out), stopped again, warnings/alarms, low battery.
+let genHash = '';
+async function syncGeneratorAlerts() {
+  const gen = [...catalog.values()].filter(r => r.platform === 'generac' && settings.get(r.entity_id)?.enabled !== false);
+  const status = gen.find(r => r.kind === 'sensor' && /_status$/.test(r.entity_id)) || gen.find(r => r.kind === 'sensor' && /status/.test(r.entity_id));
+  const batt = gen.find(r => r.kind === 'sensor' && /batter/.test(r.entity_id));
+  const warns = gen.filter(r => r.kind === 'binary_sensor' && /warning|alarm|fault|maintenance/.test(r.entity_id));
+  const aid = 'mh_generator_alerts';
+  const hash = JSON.stringify([status?.entity_id, batt?.entity_id, warns.map(w => w.entity_id), notifyTargets()]);
+  if (hash === genHash) return;
+  if (!status && !batt && !warns.length) { genHash = hash; return; }
+  const send = (title, message, extra = {}) => notifyTargets().map(t => ({ action: `notify.${t}`, data: { title, message,
+    data: { tag: 'mh_generator', priority: 'high', ttl: 0, channel: 'Home alerts', clickAction: `${APP_URL}/`, url: `${APP_URL}/`, ...extra } } }));
+  const triggers = [], choose = [];
+  if (status) {
+    const st = `states('${status.entity_id}') | lower`;
+    triggers.push({ trigger: 'template', value_template: `{{ 'running' in ${st} }}`, for: '00:02:00', id: 'running' });
+    triggers.push({ trigger: 'template', value_template: `{{ ['warning', 'alarm', 'fault', 'stopped', 'off', 'communication'] | select('in', ${st}) | list | count > 0 }}`, for: '00:15:00', id: 'trouble' });
+    triggers.push({ trigger: 'state', entity_id: status.entity_id, id: 'changed' });
+    choose.push({ conditions: [{ condition: 'trigger', id: 'running' }], sequence: send('⚡ Generator is running', 'The power is probably out at home. The generator has been running 2 minutes.') });
+    choose.push({ conditions: [{ condition: 'trigger', id: 'trouble' }], sequence: send('⚠️ Generator needs attention', `Mobile Link says: {{ states('${status.entity_id}') }}`) });
+    choose.push({ conditions: [{ condition: 'trigger', id: 'changed' }, { condition: 'template', value_template: `{{ 'running' in (trigger.from_state.state | lower) and 'ready' in (trigger.to_state.state | lower) }}` }],
+      sequence: send('✅ Generator stopped', 'It is back to Ready — the power should be back on.') });
+  }
+  for (const w of warns) {
+    triggers.push({ trigger: 'state', entity_id: w.entity_id, to: 'on', id: `w_${w.entity_id}` });
+    choose.push({ conditions: [{ condition: 'trigger', id: `w_${w.entity_id}` }], sequence: send('⚠️ Generator warning', `${w.name.replace(/^generac[_ ]?\d*[_ ]?/i, '').replace(/_/g, ' ')} — check Mobile Link.`) });
+  }
+  if (batt) {
+    triggers.push({ trigger: 'numeric_state', entity_id: batt.entity_id, below: 12.2, for: '00:30:00', id: 'battery' });
+    choose.push({ conditions: [{ condition: 'trigger', id: 'battery' }], sequence: send('🔋 Generator battery low', `Battery reads {{ states('${batt.entity_id}') }} V. It may not start when the power goes out.`) });
+  }
+  await haConfig('POST', 'automation', aid, { id: aid, alias: 'Alert: Generator', mode: 'queued',
+    description: 'Made by the McDonald Home app — generator running / stopped / warnings / low battery.', triggers, conditions: [], actions: [{ choose }] });
+  genHash = hash;
+  log(`Generator alerts saved (${[status && 'status', batt && 'battery', warns.length && `${warns.length} warnings`].filter(Boolean).join(', ')})`);
 }
 
 // ---------------------------------------------------------------- Routines
