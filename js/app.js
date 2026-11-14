@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.10.0';
+const VERSION = '2.10.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -351,10 +351,12 @@ function relTime(t) {
   if (s < 86400) return `${Math.round(s / 3600)} hr ago`;
   return fmtDate(t);
 }
-const devName = d => d.display_name || d.name.replace(/\s+live view$/i, '').trim() || d.entity_id;
+const devName = d => d.display_name || (d.platform === 'generac' ? 'Generator ' + String(d.entity_id).replace(/^\w+\.generac_\d+_?/i, '').replace(/_/g, ' ') : '')
+  || d.name.replace(/\s+live view$/i, '').trim() || d.entity_id;
 // name without the device's own name in front ("Tallman WS Wind Speed" → "Wind Speed")
 const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
 const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉', climate: '🌡️' };
+function genBinaryText(d) { return d.state === 'on' ? { text: 'Warning', cls: 'alarm' } : d.state === 'off' ? { text: 'OK', cls: '' } : null; }
 function devIcon(d) {
   if (d.platform === 'generac') return /batter/.test(d.entity_id) ? '🔋' : /status/.test(d.entity_id) ? '⚙️' : /warning|alarm/.test(d.entity_id) ? '⚠️' : '🔌';
   if (d.entity_id.startsWith('input_boolean.')) return '🔔';
@@ -372,6 +374,7 @@ const ALARM_CLASSES = ['moisture', 'smoke', 'gas', 'cold', 'heat', 'problem', 's
 function devValue(d) {
   const st = d.state;
   if (!st || st === 'unavailable' || st === 'unknown') return { text: 'Offline', cls: 'off' };
+  if (d.platform === 'generac' && d.kind === 'binary_sensor' && genBinaryText(d)) return genBinaryText(d);
   if (d.kind === 'sensor' && d.device_class === 'timestamp') return { text: relTime(st) };
   if (d.kind === 'sensor' && /wind.*dir/i.test(d.name) && !isNaN(parseFloat(st))) return { text: `${compass(+st)} (${Math.round(+st)}°)` };
   if (d.kind === 'sensor') {
@@ -1176,7 +1179,7 @@ const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = n
 
 // ---- Generator (Generac Mobile Link) ----
 const genDevices = () => shownDevices().filter(d => d.platform === 'generac');
-const genLabel = d => d.display_name || String(d.name || d.entity_id).replace(/^(sensor|binary_sensor)\./, '').replace(/^generac[_ ]?\d*[_ ]?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim() || 'Generator';
+const genLabel = d => d.display_name || String(d.entity_id).replace(/^\w+\.generac_\d+_?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim() || 'Generator';
 function genState() {
   const G = genDevices(); if (!G.length) return null;
   const status = G.find(d => d.kind === 'sensor' && /_status$/.test(d.entity_id)) || G.find(d => d.kind === 'sensor' && /status/.test(d.entity_id));
@@ -1190,7 +1193,8 @@ function genTile() {
   const g = genState(); if (!g) return '';
   const icon = g.cls === 'run' ? '⚡' : g.cls === 'bad' ? '⚠️' : '🔌';
   return `<div class="card gtile ${g.cls}"><button class="tmain" id="genOpen"><span class="gico">${icon}</span>
-    <span class="grow" style="min-width:0;text-align:left"><b>Generator</b><br><span class="small">${esc(['unknown', 'unavailable'].includes(g.st) ? 'No report from Mobile Link' : g.st)}${isNaN(g.v) ? '' : ` · battery ${g.v.toFixed(1)} V`}${g.warn.length ? ` · ${g.warn.length} warning${g.warn.length > 1 ? 's' : ''}` : ''}</span></span><span class="muted">›</span></button></div>`;
+    <span class="grow" style="min-width:0;text-align:left"><b>Generator</b><br><span class="small">${esc(['unknown', 'unavailable'].includes(g.st) ? 'No report from Mobile Link' : g.st)}${isNaN(g.v) ? '' : ` · battery ${g.v.toFixed(1)} V`}</span>
+      ${g.warn.length ? `<br><span class="small gwarn">⚠️ Mobile Link is showing a warning — open the Mobile Link app for details</span>` : ''}</span><span class="muted">›</span></button></div>`;
 }
 function openGenerator() {
   const g = genState(); if (!g) return;
@@ -1424,7 +1428,7 @@ function homeAlerts() {
   if (S.bridge && !bridgeOnline()) out.push({ text: `House offline — last heard ${relTime(S.bridge.last_seen)}` });
   for (const d of shownDevices()) {
     if (d.kind === 'lock' && d.state === 'jammed') out.push({ text: `${devName(d)} is jammed`, sub: 'Check the lock' });   // unlocked/open doors show in the Doors section
-    if (d.kind === 'binary_sensor' && devValue(d).cls === 'alarm') out.push({ text: d.device_class === 'moisture' ? 'Water detected' : `${devName(d)}: ${devValue(d).text.replace(/!$/, '')}`, sub: `${devName(d)} · ${placeName(d)}` });
+    if (d.kind === 'binary_sensor' && devValue(d).cls === 'alarm' && d.platform !== 'generac') out.push({ text: d.device_class === 'moisture' ? 'Water detected' : `${devName(d)}: ${devValue(d).text.replace(/!$/, '')}`, sub: `${devName(d)} · ${placeName(d)}` });
   }
   return out;
 }

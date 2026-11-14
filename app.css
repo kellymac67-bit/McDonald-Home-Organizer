@@ -273,3 +273,4 @@ a.chip{text-decoration:none;color:inherit}
 .gtile .gico{font-size:30px;width:1.6em;text-align:center}
 .gtile.ok{border-color:#2fa84f}.gtile.run{border-color:#e8833a}.gtile.bad{border-color:#d33}
 .gtile.bad .small{color:#c22;font-weight:600}.gtile.run .small{color:#c25f12;font-weight:600}
+.gtile .gwarn{color:#c22;font-weight:700}
