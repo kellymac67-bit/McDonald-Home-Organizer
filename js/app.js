@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.10.2';
+const VERSION = '2.10.3';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -351,7 +351,7 @@ function relTime(t) {
   if (s < 86400) return `${Math.round(s / 3600)} hr ago`;
   return fmtDate(t);
 }
-const devName = d => d.display_name || (d.platform === 'generac' ? 'Generator ' + String(d.entity_id).replace(/^\w+\.generac_\d+_?/i, '').replace(/_/g, ' ') : '')
+const devName = d => d.display_name || (d.platform === 'generac' ? String(d.entity_id).replace(/^.*?generac_\d+_?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()) : '')
   || d.name.replace(/\s+live view$/i, '').trim() || d.entity_id;
 // name without the device's own name in front ("Tallman WS Wind Speed" → "Wind Speed")
 const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(); return !d.display_name && pre && n.toLowerCase().startsWith(pre.toLowerCase() + ' ') ? n.slice(pre.length + 1) : n; };
@@ -1179,7 +1179,7 @@ const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = n
 
 // ---- Generator (Generac Mobile Link) ----
 const genDevices = () => shownDevices().filter(d => d.platform === 'generac');
-const genLabel = d => d.display_name || String(d.entity_id).replace(/^\w+\.generac_\d+_?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim() || 'Generator';
+const genLabel = d => d.display_name || String(d.entity_id).replace(/^.*?generac_\d+_?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim() || 'Generator';
 function genState() {
   const G = genDevices(); if (!G.length) return null;
   const status = G.find(d => d.kind === 'sensor' && /_status$/.test(d.entity_id)) || G.find(d => d.kind === 'sensor' && /status/.test(d.entity_id));

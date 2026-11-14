@@ -753,7 +753,7 @@ async function syncGeneratorAlerts() {
   for (const w of warns) {
     triggers.push({ trigger: 'state', entity_id: w.entity_id, to: 'on', id: `w_${w.entity_id}` });
     choose.push({ conditions: [{ condition: 'trigger', id: `w_${w.entity_id}` }], sequence: /show_warning/.test(w.entity_id) ? send('🔧 Generator reminder', 'Mobile Link is showing a reminder (often maintenance due). Check the Mobile Link app.')
-      : send('⚠️ Generator warning', `${w.entity_id.replace(/^\w+\.generac_\d+_?/i, '').replace(/_/g, ' ')} — check Mobile Link.`) });
+      : send('⚠️ Generator warning', `${w.entity_id.replace(/^.*?generac_\d+_?/i, '').replace(/_/g, ' ')} — check Mobile Link.`) });
   }
   if (batt) {
     triggers.push({ trigger: 'numeric_state', entity_id: batt.entity_id, below: 12.2, for: '00:30:00', id: 'battery' });
