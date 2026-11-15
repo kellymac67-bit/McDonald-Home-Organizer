@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.10.3';
+const VERSION = '2.11.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -173,7 +173,7 @@ const routes = [
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
-  [/^\/routines$/, viewRoutines], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
+  [/^\/routines$/, viewRoutines], [/^\/sprinklers$/, viewSprinklers], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -358,6 +358,7 @@ const shortName = d => { const n = devName(d), pre = (d.device_name || '').trim(
 const DEV_ICON = { camera: '📷', switch: '🔌', light: '💡', lock: '🔒', cover: '🚪', sensor: '🌡️', binary_sensor: '◉', climate: '🌡️' };
 function genBinaryText(d) { return d.state === 'on' ? (/show_warning/.test(d.entity_id) ? { text: 'Reminder', cls: 'warn' } : { text: 'Warning', cls: 'alarm' }) : d.state === 'off' ? { text: 'OK', cls: '' } : null; }
 function devIcon(d) {
+  if (d.platform === 'rachio') return '💧';
   if (d.platform === 'generac') return /batter/.test(d.entity_id) ? '🔋' : /status/.test(d.entity_id) ? '⚙️' : /warning|alarm/.test(d.entity_id) ? '⚠️' : '🔌';
   if (d.entity_id.startsWith('input_boolean.')) return '🔔';
   if (d.kind === 'sensor') return { humidity: '💧', moisture: '💧', illuminance: '☀️', pressure: '⏲️' }[d.device_class] || '🌡️';
@@ -944,7 +945,8 @@ const sortedScenes = () => [...(S.scenes || [])].sort((a, b) => a.sort - b.sort 
 const sceneById = id => (S.scenes || []).find(x => x.id === id);
 // on/off settings made in Home Assistant (like "Boiler alerts") aren't lights
 const isSetting = d => d.entity_id.startsWith('input_boolean.');
-const switchables = () => shownDevices().filter(d => ['switch', 'light'].includes(d.kind) && !isSetting(d));
+const isSprinkler = d => d.platform === 'rachio';
+const switchables = () => shownDevices().filter(d => ['switch', 'light'].includes(d.kind) && !isSetting(d) && !isSprinkler(d));
 const settingSwitches = () => shownDevices().filter(d => d.kind === 'switch' && isSetting(d));
 function placeName(d) { const t = devPlace(d); return t.length ? t.map(l => l.name).join(' › ') : d.ha_area || 'No area'; }
 function groupByPlace(list) {
@@ -1177,6 +1179,26 @@ function viewActivity(params) {
 const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = new Date(d); x.setHours(0, 0, 0, 0); const diff = Math.round((t - x) / 86400e3);
   return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : x.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }); };
 
+// ---- Sprinklers (Rachio) ----
+function viewSprinklers() {
+  header('Sprinklers', { backBtn: true }); tabs('more');
+  view().innerHTML = '<div id="spv" style="display:flex;flex-direction:column;gap:14px"></div>';
+  const draw = () => {
+    const el = $('#spv'); if (!el) return;
+    const all = shownDevices().filter(isSprinkler);
+    const zones = all.filter(d => d.kind === 'switch' && !/standby|rain|schedule/i.test(devName(d) + d.entity_id));
+    const other = all.filter(d => !zones.includes(d));
+    const on = zones.filter(d => d.state === 'on');
+    el.innerHTML = all.length ? `${on.length ? `<div class="card" style="border-color:var(--brand)">💧 <b>Watering now:</b> ${esc(on.map(devName).join(', '))}</div>` : ''}
+      <section class="hsec"><div class="lab">Zones</div><div class="card" style="padding:2px 14px"><div class="list">${zones.map(d => devRow(d, false)).join('') || '<p class="small muted">No zones found.</p>'}</div></div>
+        <p class="small muted" style="margin:0">Turning a zone on runs it for Rachio's default time; turn it off to stop early.</p></section>
+      ${other.length ? `<section class="hsec"><div class="lab">Controller</div><div class="card" style="padding:2px 14px"><div class="list">${other.map(d => devRow(d, false)).join('')}</div></div></section>` : ''}`
+      : '<div class="card muted">Rachio isn\'t in the app yet.</div>';
+    wireDevices(el, draw);
+  };
+  draw(); S.cleanup = pollDevices(draw, 10000);
+}
+
 // ---- Generator (Generac Mobile Link) ----
 const genDevices = () => shownDevices().filter(d => d.platform === 'generac');
 const genLabel = d => d.display_name || String(d.entity_id).replace(/^.*?generac_\d+_?/i, '').replace(/_/g, ' ').replace(/^\w/, c => c.toUpperCase()).trim() || 'Generator';
@@ -1273,7 +1295,7 @@ function routineCheck(key, rt) {
     return { icon: '🚗', title: G.length > 1 ? 'Garage doors' : devName(G[0]), text: open.length ? `${open.map(d => devValue(d).text).join(', ')}${leaving ? ' — it should close once you pull out' : ''}` : 'Closed', st: open.length ? 'warn' : 'ok', btn: open.length && canUnlock() ? `<button class="btn sm" data-rclose="${esc(open[0].entity_id)}">Close</button>` : '' };
   }
   if (key === 'lights') {
-    const on = shownDevices().filter(d => d.kind === 'light' || (d.kind === 'switch' && !/alert|heat|boiler|fan|circulat/i.test(devName(d)) && d.entity_id.startsWith('switch.') || d.kind === 'light')).filter(d => d.state === 'on');
+    const on = shownDevices().filter(d => !isSprinkler(d) && (d.kind === 'light' || (d.kind === 'switch' && !/alert|heat|boiler|fan|circulat/i.test(devName(d)) && d.entity_id.startsWith('switch.') || d.kind === 'light'))).filter(d => d.state === 'on');
     const uniq = [...new Map(on.map(d => [d.entity_id, d])).values()];
     return { icon: '💡', title: 'Lights', text: uniq.length ? `${uniq.length} on: ${uniq.slice(0, 4).map(devName).join(', ')}${uniq.length > 4 ? '…' : ''}` : 'All off', st: uniq.length && leaving ? 'warn' : uniq.length ? 'info' : 'ok' };
   }
@@ -2229,6 +2251,7 @@ function viewMore() {
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
       <a class="locrow" href="/activity"><span class="nm">Activity log</span><span class="muted">›</span></a>
+      ${shownDevices().some(isSprinkler) ? '<a class="locrow" href="/sprinklers"><span class="nm">💧 Sprinklers</span><span class="muted">›</span></a>' : ''}
       ${carDevices().length ? `<a class="locrow" href="/tesla"><span class="nm">⚡ Tesla — ${esc(carName())}</span><span class="muted">›</span></a>` : ''}
       <a class="locrow" href="/routines"><span class="nm">Routines (Tesla checklists)</span><span class="count">${(S.routines || []).length}</span></a>
       ${S.me.is_admin ? `<a class="locrow" href="/devices"><span class="nm">Home devices &amp; cameras</span><span class="count">${(S.devices || []).filter(d => d.enabled).length}</span></a>` : ''}
