@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.9.1';
+const VERSION = '0.9.2';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -157,7 +157,7 @@ async function buildCatalog() {
     const domain0 = e.entity_id.split('.')[0];
     // cameras and sensors only when they have an Area (keeps the Salem Center cameras out);
     // lights, switches, locks and garage doors always, so every lamp can go in a scene
-    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan', 'climate'].includes(domain0) && e.platform !== 'sense') continue;
+    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan', 'climate'].includes(domain0) && !['sense', 'solaredge'].includes(e.platform)) continue;
     const s = stateOf.get(e.entity_id); if (!s) continue;
     const domain = e.entity_id.split('.')[0];
     const dc = s.attributes.device_class || '';
@@ -181,6 +181,8 @@ async function buildCatalog() {
     else if (domain === 'binary_sensor' && BINARY_CLASSES.has(dc)) kind = 'binary_sensor';
     // the generator (Generac Mobile Link): status, battery, run hours, warnings — not its address / serial / model
     else if (e.platform === 'generac' && domain === 'binary_sensor') kind = 'binary_sensor';
+    // SolarEdge: solar power now, today's and lifetime production (per-panel readings stay in Home Assistant)
+    else if (e.platform === 'solaredge' && domain === 'sensor' && (dc === 'power' || (dc === 'energy' && /today|day|lifetime|year|month/i.test(e.entity_id)))) kind = 'sensor';
     // Sense energy monitor: power right now for the house and each detected device, plus today's kWh (not week/month/year/bill)
     else if (e.platform === 'sense' && domain === 'sensor' && (dc === 'power' || (dc === 'energy' && /daily|today/i.test(e.entity_id)) || /usage|production/i.test(e.entity_id) && !/weekly|monthly|yearly|bill/i.test(e.entity_id))) kind = 'sensor';
     else if (e.platform === 'generac' && domain === 'sensor' && !/address|activation|serial|model|dealer|panel|device_type|_id$|lat|lon/i.test(e.entity_id)) kind = 'sensor';

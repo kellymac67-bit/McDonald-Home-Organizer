@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.12.0';
+const VERSION = '2.13.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1181,9 +1181,16 @@ const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = n
 
 // ---- Energy (Sense) ----
 const kw = w => isNaN(w) ? '–' : w >= 1000 ? `${(w / 1000).toFixed(w >= 10000 ? 0 : 1)} kW` : `${Math.round(w)} W`;
+function kwhOf(d) { if (!d) return NaN; const v = parseFloat(d.state), u = String(d.unit || d.attributes?.unit_of_measurement || ''); return /^mwh$/i.test(u) ? v * 1000 : /^wh$/i.test(u) ? v / 1000 : v; }
 function watts(d) { if (!d) return NaN; let v = parseFloat(d.state); if (/kw/i.test(d.unit || d.attributes?.unit_of_measurement || '')) v *= 1000; return v; }
 function energyState() {
-  const E = shownDevices().filter(d => d.platform === 'sense'); if (!E.length) return null;
+  const E = shownDevices().filter(d => d.platform === 'sense');
+  const SE = shownDevices().filter(d => d.platform === 'solaredge');
+  if (!E.length && !SE.length) return null;
+  // SolarEdge: production now and today
+  const sePower = SE.find(d => d.device_class === 'power' && /current_power|power$/i.test(d.entity_id) && !/consumption|grid|import|export|storage|battery/i.test(d.entity_id)) || SE.find(d => d.device_class === 'power');
+  const seToday = SE.find(d => d.device_class === 'energy' && /today|energy_this_day|_day/i.test(d.entity_id));
+  const seLife = SE.find(d => d.device_class === 'energy' && /lifetime/i.test(d.entity_id));
   const power = E.filter(d => d.device_class === 'power'), energy = E.filter(d => d.device_class === 'energy');
   const isMain = d => /energy_usage|active_usage|^sensor\.energy$|usage$/i.test(d.entity_id) && !/production/i.test(d.entity_id);
   const main = power.find(isMain) || power.slice().sort((a, b) => watts(b) - watts(a))[0];
@@ -1191,13 +1198,15 @@ function energyState() {
   const today = energy.find(d => /daily_usage|daily_energy$|today/i.test(d.entity_id) && (d.device_name === main?.device_name)) || energy.find(d => /daily_usage/i.test(d.entity_id));
   const devs = power.filter(d => d !== main && d !== solar && d.device_name !== main?.device_name).map(d => ({ d, w: watts(d),
     kwh: parseFloat(energy.find(x => x.device_name === d.device_name && /daily/i.test(x.entity_id))?.state) })).sort((a, b) => (b.w || 0) - (a.w || 0));
-  return { main, solar, today, devs };
+  return { main, solar: solar || sePower, solarToday: seToday, solarLife: seLife, today, devs };
 }
 function energyTile() {
-  const e = energyState(); if (!e || !e.main) return '';
+  const e = energyState(); if (!e) return '';
+  if (!e.main) return e.solar ? `<a class="card gtile etile" href="/energy"><span class="tmain"><span class="gico">☀️</span><span class="grow"><b>Solar ${esc(kw(watts(e.solar)))}</b>${e.solarToday ? ` <span class="small muted">· ${esc(kwhOf(e.solarToday).toFixed(1))} kWh today</span>` : ''}</span><span class="muted">›</span></span></a>` : '';
+  const sun = e.solar && watts(e.solar) > 20 ? ` · ☀️ ${kw(watts(e.solar))}` : '';
   const top = e.devs.filter(x => x.w > 50).slice(0, 2).map(x => `${devName(x.d).replace(/ power$/i, '')} ${kw(x.w)}`).join(', ');
-  return `<a class="card gtile etile" href="/energy"><span class="tmain"><span class="gico">⚡</span><span class="grow" style="min-width:0;text-align:left"><b>Using ${esc(kw(watts(e.main)))}</b>${e.today ? ` <span class="small muted">· ${esc(parseFloat(e.today.state).toFixed(1))} kWh today</span>` : ''}
-    ${top ? `<br><span class="small muted">${esc(top)}</span>` : ''}</span><span class="muted">›</span></span></a>`;
+  return `<a class="card gtile etile" href="/energy"><span class="tmain"><span class="gico">⚡</span><span class="grow" style="min-width:0;text-align:left"><b>Using ${esc(kw(watts(e.main)))}</b>${e.today ? ` <span class="small muted">· ${esc(kwhOf(e.today).toFixed(1))} kWh today</span>` : ''}
+    ${sun ? `<span class="small" style="color:#b7791f;font-weight:600">${esc(sun)}</span>` : ''}${top ? `<br><span class="small muted">${esc(top)}</span>` : ''}</span><span class="muted">›</span></span></a>`;
 }
 function viewEnergy() {
   header('Energy', { backBtn: true }); tabs('home');
@@ -1205,11 +1214,15 @@ function viewEnergy() {
   const draw = () => {
     const el = $('#ev'); if (!el) return;
     const e = energyState();
-    if (!e || !e.main) { el.innerHTML = '<div class="card muted">Sense isn\'t in the app yet. Update the bridge to 0.9.1.</div>'; return; }
+    if (!e) { el.innerHTML = '<div class="card muted">Sense / SolarEdge aren\'t in the app yet. Update the bridge to 0.9.2.</div>'; return; }
+    if (!e.main) e.main = e.solar;
     const on = e.devs.filter(x => x.w > 5), off = e.devs.filter(x => !(x.w > 5));
     const row = x => `<div class="devrow tapable" data-hist="${esc(x.d.entity_id)}"><span class="ic">${x.w > 5 ? '🟢' : '⚪'}</span><div class="grow"><div class="nm">${esc(devName(x.d).replace(/ power$/i, ''))}</div>${isNaN(x.kwh) ? '' : `<div class="small muted">${x.kwh.toFixed(2)} kWh today</div>`}</div><span class="val">${esc(kw(x.w))}</span></div>`;
     el.innerHTML = `<div class="card whero tapable" data-hist="${esc(e.main.entity_id)}"><div class="wbig">${esc(kw(watts(e.main)))}</div><div class="grow"><b>Using right now</b>
-        ${e.today ? `<div>${esc(parseFloat(e.today.state).toFixed(1))} kWh so far today</div>` : ''}${e.solar ? `<div>☀️ Solar ${esc(kw(watts(e.solar)))}</div>` : ''}<div class="small muted">from Sense · updates every 30 s · tap for history</div></div></div>
+        ${e.today ? `<div>${esc(kwhOf(e.today).toFixed(1))} kWh so far today</div>` : ''}<div class="small muted">from Sense · updates every 30 s · tap for history</div></div></div>
+      ${e.solar ? `<div class="card whero tapable" data-hist="${esc(e.solar.entity_id)}" style="border-color:#e0b04a"><div class="wbig" style="color:#b7791f">${esc(kw(watts(e.solar)))}</div><div class="grow"><b>☀️ Solar making now</b>
+        ${e.solarToday ? `<div>${esc(kwhOf(e.solarToday).toFixed(1))} kWh today</div>` : ''}${e.solarLife ? `<div class="small muted">${esc(Math.round(kwhOf(e.solarLife)).toLocaleString())} kWh lifetime</div>` : ''}
+        <div class="small muted">${e.solar.platform === 'solaredge' ? 'from SolarEdge · updates about every 15 min' : 'from Sense'}</div></div></div>` : ''}
       ${on.length ? `<section class="hsec"><div class="lab">Running now</div><div class="card" style="padding:2px 14px"><div class="list">${on.map(row).join('')}</div></div></section>` : ''}
       ${off.length ? `<details class="card"><summary class="lab" style="cursor:pointer">Off (${off.length})</summary><div class="list">${off.map(row).join('')}</div></details>` : ''}`;
     wireHistory(el);
