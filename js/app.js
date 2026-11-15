@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.11.0';
+const VERSION = '2.12.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -173,7 +173,7 @@ const routes = [
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
-  [/^\/routines$/, viewRoutines], [/^\/sprinklers$/, viewSprinklers], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
+  [/^\/routines$/, viewRoutines], [/^\/energy$/, viewEnergy], [/^\/sprinklers$/, viewSprinklers], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -1179,6 +1179,44 @@ function viewActivity(params) {
 const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = new Date(d); x.setHours(0, 0, 0, 0); const diff = Math.round((t - x) / 86400e3);
   return diff === 0 ? 'Today' : diff === 1 ? 'Yesterday' : x.toLocaleDateString([], { weekday: 'long', month: 'short', day: 'numeric' }); };
 
+// ---- Energy (Sense) ----
+const kw = w => isNaN(w) ? '–' : w >= 1000 ? `${(w / 1000).toFixed(w >= 10000 ? 0 : 1)} kW` : `${Math.round(w)} W`;
+function watts(d) { if (!d) return NaN; let v = parseFloat(d.state); if (/kw/i.test(d.unit || d.attributes?.unit_of_measurement || '')) v *= 1000; return v; }
+function energyState() {
+  const E = shownDevices().filter(d => d.platform === 'sense'); if (!E.length) return null;
+  const power = E.filter(d => d.device_class === 'power'), energy = E.filter(d => d.device_class === 'energy');
+  const isMain = d => /energy_usage|active_usage|^sensor\.energy$|usage$/i.test(d.entity_id) && !/production/i.test(d.entity_id);
+  const main = power.find(isMain) || power.slice().sort((a, b) => watts(b) - watts(a))[0];
+  const solar = power.find(d => /production/i.test(d.entity_id));
+  const today = energy.find(d => /daily_usage|daily_energy$|today/i.test(d.entity_id) && (d.device_name === main?.device_name)) || energy.find(d => /daily_usage/i.test(d.entity_id));
+  const devs = power.filter(d => d !== main && d !== solar && d.device_name !== main?.device_name).map(d => ({ d, w: watts(d),
+    kwh: parseFloat(energy.find(x => x.device_name === d.device_name && /daily/i.test(x.entity_id))?.state) })).sort((a, b) => (b.w || 0) - (a.w || 0));
+  return { main, solar, today, devs };
+}
+function energyTile() {
+  const e = energyState(); if (!e || !e.main) return '';
+  const top = e.devs.filter(x => x.w > 50).slice(0, 2).map(x => `${devName(x.d).replace(/ power$/i, '')} ${kw(x.w)}`).join(', ');
+  return `<a class="card gtile etile" href="/energy"><span class="tmain"><span class="gico">⚡</span><span class="grow" style="min-width:0;text-align:left"><b>Using ${esc(kw(watts(e.main)))}</b>${e.today ? ` <span class="small muted">· ${esc(parseFloat(e.today.state).toFixed(1))} kWh today</span>` : ''}
+    ${top ? `<br><span class="small muted">${esc(top)}</span>` : ''}</span><span class="muted">›</span></span></a>`;
+}
+function viewEnergy() {
+  header('Energy', { backBtn: true }); tabs('home');
+  view().innerHTML = '<div id="ev" style="display:flex;flex-direction:column;gap:14px"></div>';
+  const draw = () => {
+    const el = $('#ev'); if (!el) return;
+    const e = energyState();
+    if (!e || !e.main) { el.innerHTML = '<div class="card muted">Sense isn\'t in the app yet. Update the bridge to 0.9.1.</div>'; return; }
+    const on = e.devs.filter(x => x.w > 5), off = e.devs.filter(x => !(x.w > 5));
+    const row = x => `<div class="devrow tapable" data-hist="${esc(x.d.entity_id)}"><span class="ic">${x.w > 5 ? '🟢' : '⚪'}</span><div class="grow"><div class="nm">${esc(devName(x.d).replace(/ power$/i, ''))}</div>${isNaN(x.kwh) ? '' : `<div class="small muted">${x.kwh.toFixed(2)} kWh today</div>`}</div><span class="val">${esc(kw(x.w))}</span></div>`;
+    el.innerHTML = `<div class="card whero tapable" data-hist="${esc(e.main.entity_id)}"><div class="wbig">${esc(kw(watts(e.main)))}</div><div class="grow"><b>Using right now</b>
+        ${e.today ? `<div>${esc(parseFloat(e.today.state).toFixed(1))} kWh so far today</div>` : ''}${e.solar ? `<div>☀️ Solar ${esc(kw(watts(e.solar)))}</div>` : ''}<div class="small muted">from Sense · updates every 30 s · tap for history</div></div></div>
+      ${on.length ? `<section class="hsec"><div class="lab">Running now</div><div class="card" style="padding:2px 14px"><div class="list">${on.map(row).join('')}</div></div></section>` : ''}
+      ${off.length ? `<details class="card"><summary class="lab" style="cursor:pointer">Off (${off.length})</summary><div class="list">${off.map(row).join('')}</div></details>` : ''}`;
+    wireHistory(el);
+  };
+  draw(); S.cleanup = pollDevices(draw, 30000);
+}
+
 // ---- Sprinklers (Rachio) ----
 function viewSprinklers() {
   header('Sprinklers', { backBtn: true }); tabs('more');
@@ -1477,7 +1515,7 @@ function viewHomeDash() {
         const list = p.glance.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
         const ot = outdoorTemp(), wind = weatherDevices().find(d => /wind.*speed|^wind$/i.test(devName(d)));
         const wbtn = weatherDevices().length ? `<a class="wbtn" href="/weather"><svg width="26" height="26" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 18a4 4 0 0 1-.6-8A6 6 0 0 1 18 9a4.5 4.5 0 0 1-.5 9z"/></svg><span class="grow"><b>Weather</b>${ot ? `<br><span class="small">${esc(devValue(ot).text)}${wind ? ` · wind ${esc(devValue(wind).text)}` : ''}</span>` : ''}</span><span aria-hidden="true">›</span></a>` : '';
-        const thermos = shownDevices().filter(d => d.kind === 'climate').map(thermoTile).join('') + genTile();
+        const thermos = shownDevices().filter(d => d.kind === 'climate').map(thermoTile).join('') + genTile() + energyTile();
         if (list.length || wbtn || thermos) parts.push(`<section class="hsec"><div class="lab">At a glance</div>${thermos}${list.length ? `<div class="card glance" style="grid-template-columns:repeat(${Math.min(list.length, 4)},minmax(0,1fr))">${list.map(d => { const v = devValue(d); const n = parseFloat(d.state); const u = d.unit || ''; const deg = /°/.test(u), pct = u === '%'; const num = d.kind === 'sensor' && !isNaN(n) && d.device_class !== 'timestamp';
           const big = num ? (deg || pct ? `${Math.round(n)}${deg ? '°' : '%'}` : `${/inhg/i.test(u) ? Math.round(n * 100) / 100 : Math.abs(n) < 10 ? Math.round(n * 10) / 10 : Math.round(n)}`) : v.text;
           const unit = num && !deg && !pct && u ? `<span class="gu">${esc(u)}</span>` : '';

@@ -275,3 +275,5 @@ a.chip{text-decoration:none;color:inherit}
 .gtile.bad .small{color:#c22;font-weight:600}.gtile.run .small{color:#c25f12;font-weight:600}
 .gtile .gwarn{color:#c22;font-weight:700}
 .gtile.due{border-color:#d9a01e}.gtile.due .gwarn{color:#a36b00}
+.etile{text-decoration:none;color:inherit;display:block}
+.etile .tmain{display:flex;align-items:center;gap:14px}
