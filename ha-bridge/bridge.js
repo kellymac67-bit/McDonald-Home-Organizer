@@ -157,7 +157,7 @@ async function buildCatalog() {
     const domain0 = e.entity_id.split('.')[0];
     // cameras and sensors only when they have an Area (keeps the Salem Center cameras out);
     // lights, switches, locks and garage doors always, so every lamp can go in a scene
-    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan', 'climate'].includes(domain0) && !['sense', 'solaredge'].includes(e.platform)) continue;
+    if (!areaId && !['switch', 'light', 'lock', 'cover', 'input_boolean', 'fan', 'climate'].includes(domain0) && !['sense', 'solaredge', 'solaredge_modbus'].includes(e.platform)) continue;
     const s = stateOf.get(e.entity_id); if (!s) continue;
     const domain = e.entity_id.split('.')[0];
     const dc = s.attributes.device_class || '';
@@ -183,6 +183,9 @@ async function buildCatalog() {
     else if (e.platform === 'generac' && domain === 'binary_sensor') kind = 'binary_sensor';
     // SolarEdge: solar power now, today's and lifetime production (per-panel readings stay in Home Assistant)
     else if (e.platform === 'solaredge' && domain === 'sensor' && (dc === 'power' || (dc === 'energy' && /today|day|lifetime|year|month/i.test(e.entity_id)))) kind = 'sensor';
+    // SolarEdge Modbus (local, read straight from each inverter): AC power and lifetime energy for each inverter and any meter
+    else if (e.platform === 'solaredge_modbus' && domain === 'sensor' && ['power', 'energy'].includes(dc)
+             && !/dc_|_dc$|apparent|reactive|limit|reserve|max/i.test(e.entity_id)) kind = 'sensor';
     // Sense energy monitor: power right now for the house and each detected device, plus today's kWh (not week/month/year/bill)
     else if (e.platform === 'sense' && domain === 'sensor' && (dc === 'power' || (dc === 'energy' && /daily|today/i.test(e.entity_id)) || /usage|production/i.test(e.entity_id) && !/weekly|monthly|yearly|bill/i.test(e.entity_id))) kind = 'sensor';
     else if (e.platform === 'generac' && domain === 'sensor' && !/address|activation|serial|model|dealer|panel|device_type|_id$|lat|lon/i.test(e.entity_id)) kind = 'sensor';
@@ -311,7 +314,7 @@ function onHaEvent(ev) {
   row.state = new_state.state;
   row.attributes = pickAttrs(new_state);
   row.last_changed = new_state.last_changed;
-  if (row.platform === 'sense') { senseDirty.add(entity_id); return; }   // Sense changes every few seconds — send every 30 s
+  if (row.platform === 'sense' || row.platform === 'solaredge_modbus') { senseDirty.add(entity_id); return; }   // Sense changes every few seconds — send every 30 s
   dirty.add(entity_id);
 }
 const senseDirty = new Set();

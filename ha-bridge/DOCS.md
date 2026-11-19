@@ -30,3 +30,12 @@ If your Monnit gateway is an **ALTA Ethernet Gateway 4**, the bridge can read th
 2. Give the gateway a fixed address. In the Orbi, use **Address Reservation**.
 3. On the bridge's **Configuration** tab, put the gateway's IP address in **monnit_gateway_ip**, then save and restart.
 For the first 15–30 minutes the bridge learns how to read each sensor by comparing the gateway's raw numbers with iMonnit's readings. After that it uses the local numbers whenever they're newer. Water sensors (on/off) still come from iMonnit for now.
+
+## SolarEdge solar (local Modbus)
+
+SolarEdge retired its old cloud API in November 2026, so the cloud SolarEdge integration no longer gets readings.
+Use Home Assistant's **SolarEdge Modbus** integration instead (Home Assistant 2026.10+): turn on Modbus TCP on the
+inverter (red switch to P for 1–2 s, join its Wi-Fi, open 172.16.0.1 → Site Communication → Modbus TCP, port 1502),
+then add the integration with the inverter's IP, port 1502, device ID 1. A follower inverter is read through the
+leader with the same IP and device ID 2. The bridge (0.9.3+) sends each inverter's AC power and lifetime energy;
+the app adds them up and works out "today" from the history it records every 10 minutes.

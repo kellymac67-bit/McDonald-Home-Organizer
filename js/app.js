@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.13.1';
+const VERSION = '2.13.2';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1183,11 +1183,47 @@ const dayName = d => { const t = new Date(); t.setHours(0, 0, 0, 0); const x = n
 const kw = w => isNaN(w) ? '–' : w >= 1000 ? `${(w / 1000).toFixed(w >= 10000 ? 0 : 1)} kW` : `${Math.round(w)} W`;
 function kwhOf(d) { if (!d) return NaN; const v = parseFloat(d.state), u = String(d.unit || d.attributes?.unit_of_measurement || ''); return /^mwh$/i.test(u) ? v * 1000 : /^wh$/i.test(u) ? v / 1000 : v; }
 function watts(d) { if (!d) return NaN; let v = parseFloat(d.state); if (/kw/i.test(d.unit || d.attributes?.unit_of_measurement || '')) v *= 1000; return v; }
-function energyState() {
+// SolarEdge Modbus gives each inverter's lifetime kWh; today = now minus the first reading saved since midnight.
+const solarBase = { day: '', at: 0, base: {}, last: {} };
+function modbusInverters() {
+  const M = shownDevices().filter(d => d.platform === 'solaredge_modbus' && !/meter|batter|storage/i.test(d.entity_id + ' ' + d.device_name));
+  const by = new Map();
+  for (const d of M) { const k = d.device_name || d.entity_id; if (!by.has(k)) by.set(k, {}); const g = by.get(k);
+    if (d.device_class === 'power' && !g.power) g.power = d; if (d.device_class === 'energy' && !g.energy) g.energy = d; }
+  return [...by.entries()].map(([name, g]) => ({ name, ...g })).filter(g => g.power || g.energy).sort((a, b) => a.name.localeCompare(b.name, undefined, { numeric: true }));
+}
+function refreshSolarBase(inv, redraw) {
+  const day = new Date().toDateString();
+  if (solarBase.day !== day) { solarBase.day = day; solarBase.base = {}; solarBase.last = {}; solarBase.at = 0; }
+  if (!sb || Date.now() - solarBase.at < 5 * 60e3) return;
+  solarBase.at = Date.now();
+  const since = new Date(); since.setHours(0, 0, 0, 0);
+  Promise.all(inv.filter(g => g.energy).map(async g => {
+    const { data } = await sb.rpc('ha_series', { p_entity: g.energy.entity_id, p_since: since.toISOString(), p_bucket_minutes: 10 });
+    if (data?.length) { const u = { state: 0, unit: g.energy.unit }; u.state = data[0].lo; solarBase.base[g.energy.entity_id] = kwhOf(u); u.state = Math.max(...data.map(r => r.hi)); solarBase.last[g.energy.entity_id] = kwhOf(u); }
+  })).then(() => redraw && redraw()).catch(() => {});
+}
+function modbusSolar(redraw) {
+  const inv = modbusInverters(); if (!inv.length) return null;
+  refreshSolarBase(inv, redraw);
+  const W = g => { const w = watts(g.power); return isNaN(w) ? 0 : w; };   // inverters sleep at night
+  const life = g => { const k = kwhOf(g.energy); return isNaN(k) ? solarBase.last[g.energy?.entity_id] : k; };
+  const today = g => { const b = solarBase.base[g.energy?.entity_id], l = life(g); return b == null || l == null || isNaN(l) ? NaN : Math.max(0, l - b); };
+  const per = inv.map(g => ({ name: g.name, d: g.power || g.energy, w: W(g), kwh: today(g) }));
+  const sum = a => a.reduce((t, v) => t + v, 0);
+  const lifeAll = inv.every(g => g.energy && !isNaN(life(g))) ? sum(inv.map(life)) : NaN;
+  const todayAll = per.every(p => !isNaN(p.kwh)) ? sum(per.map(p => p.kwh)) : NaN;
+  const first = inv.find(g => g.power)?.power || inv[0].energy;
+  return { solar: { entity_id: first.entity_id, platform: 'solaredge_modbus', state: String(sum(per.map(p => p.w))), unit: 'W' },
+    solarToday: isNaN(todayAll) ? null : { state: String(todayAll), unit: 'kWh' },
+    solarLife: isNaN(lifeAll) ? null : { state: String(lifeAll), unit: 'kWh' }, inverters: per };
+}
+function energyState(redraw) {
   const E = shownDevices().filter(d => d.platform === 'sense');
   const SE = shownDevices().filter(d => d.platform === 'solaredge');
-  if (!E.length && !SE.length) return null;
-  // SolarEdge: production now and today
+  const MB = modbusSolar(redraw);
+  if (!E.length && !SE.length && !MB) return null;
+  // SolarEdge (cloud): production now and today
   const sePower = SE.find(d => d.device_class === 'power' && /current_power|power$/i.test(d.entity_id) && !/consumption|grid|import|export|storage|battery/i.test(d.entity_id)) || SE.find(d => d.device_class === 'power');
   const seToday = SE.find(d => d.device_class === 'energy' && /today|energy_this_day|_day/i.test(d.entity_id));
   const seLife = SE.find(d => d.device_class === 'energy' && /lifetime/i.test(d.entity_id));
@@ -1198,6 +1234,7 @@ function energyState() {
   const today = energy.find(d => /daily_usage|daily_energy$|today/i.test(d.entity_id) && (d.device_name === main?.device_name)) || energy.find(d => /daily_usage/i.test(d.entity_id));
   const devs = power.filter(d => d !== main && d !== solar && d.device_name !== main?.device_name).map(d => ({ d, w: watts(d),
     kwh: parseFloat(energy.find(x => x.device_name === d.device_name && /daily/i.test(x.entity_id))?.state) })).sort((a, b) => (b.w || 0) - (a.w || 0));
+  if (MB) return { main, solar: MB.solar, solarToday: MB.solarToday, solarLife: MB.solarLife, inverters: MB.inverters, today, devs };
   return { main, solar: solar || sePower, solarToday: seToday, solarLife: seLife, today, devs };
 }
 function energyTile() {
@@ -1213,8 +1250,8 @@ function viewEnergy() {
   view().innerHTML = '<div id="ev" style="display:flex;flex-direction:column;gap:14px"></div>';
   const draw = () => {
     const el = $('#ev'); if (!el) return;
-    const e = energyState();
-    if (!e) { el.innerHTML = '<div class="card muted">Sense / SolarEdge aren\'t in the app yet. Update the bridge to 0.9.2.</div>'; return; }
+    const e = energyState(draw);
+    if (!e) { el.innerHTML = '<div class="card muted">Sense / SolarEdge aren\'t in the app yet. Update the bridge to 0.9.3.</div>'; return; }
     if (!e.main) e.main = e.solar;
     const on = e.devs.filter(x => x.w > 5), off = e.devs.filter(x => !(x.w > 5));
     const row = x => `<div class="devrow tapable" data-hist="${esc(x.d.entity_id)}"><span class="ic">${x.w > 5 ? '🟢' : '⚪'}</span><div class="grow"><div class="nm">${esc(devName(x.d).replace(/ power$/i, ''))}</div>${isNaN(x.kwh) ? '' : `<div class="small muted">${x.kwh.toFixed(2)} kWh today</div>`}</div><span class="val">${esc(kw(x.w))}</span></div>`;
@@ -1222,7 +1259,8 @@ function viewEnergy() {
         ${e.today ? `<div>${esc(kwhOf(e.today).toFixed(1))} kWh so far today</div>` : ''}<div class="small muted">from Sense · updates every 30 s · tap for history</div></div></div>
       ${e.solar ? `<div class="card whero tapable" data-hist="${esc(e.solar.entity_id)}" style="border-color:#e0b04a"><div class="wbig" style="color:#b7791f">${esc(kw(watts(e.solar)))}</div><div class="grow"><b>☀️ Solar making now</b>
         ${e.solarToday ? `<div>${esc(kwhOf(e.solarToday).toFixed(1))} kWh today</div>` : ''}${e.solarLife ? `<div class="small muted">${esc(Math.round(kwhOf(e.solarLife)).toLocaleString())} kWh lifetime</div>` : ''}
-        <div class="small muted">${e.solar.platform === 'solaredge' ? 'from SolarEdge · updates about every 15 min' : 'from Sense'}</div></div></div>` : ''}
+        ${e.inverters && e.inverters.length > 1 ? e.inverters.map(i => `<div class="small">${esc(i.name)}: <b>${esc(kw(i.w))}</b>${isNaN(i.kwh) ? '' : ` · ${esc(i.kwh.toFixed(1))} kWh today`}</div>`).join('') : ''}
+        <div class="small muted">${e.solar.platform === 'solaredge_modbus' ? 'from the inverters (local) · updates every 30 s' : e.solar.platform === 'solaredge' ? 'from SolarEdge · updates about every 15 min' : 'from Sense'}</div></div></div>` : ''}
       ${on.length ? `<section class="hsec"><div class="lab">Running now</div><div class="card" style="padding:2px 14px"><div class="list">${on.map(row).join('')}</div></div></section>` : ''}
       ${off.length ? `<details class="card"><summary class="lab" style="cursor:pointer">Off (${off.length})</summary><div class="list">${off.map(row).join('')}</div></details>` : ''}`;
     wireHistory(el);
