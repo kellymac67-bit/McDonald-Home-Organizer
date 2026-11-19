@@ -149,6 +149,7 @@ async function buildCatalog() {
     if (e.entity_id.startsWith('camera.') && !e.disabled_by) cameraDevs.add(e.device_id);
   }
 
+  seProblems.clear();
   const rows = new Map(), dOf = new Map(), cOf = new Map(), mOf = new Map(), defaults = new Map();
   for (const e of entities) {
     if (e.disabled_by || e.hidden_by) continue;
@@ -169,6 +170,7 @@ async function buildCatalog() {
          || (domain === 'sensor' && dc === 'timestamp' && /_last_activity$/.test(e.entity_id))))
       mOf.set(e.entity_id, e.device_id);
 
+    if (e.platform === 'solaredge_modbus' && domain === 'binary_sensor' && dc === 'problem') seProblems.set(e.entity_id, dev ? (dev.name_by_user || dev.name || '') : '');
     if (e.entity_category && e.platform !== 'tesla_wall_connector') continue;   // skip settings / diagnostics (the Wall Connector's plug sensor is one)
     let kind = null;
     if (['camera', 'switch', 'light', 'lock', 'cover', 'climate'].includes(domain)) kind = domain;
@@ -251,6 +253,7 @@ async function loadSettings() {
   if (ok(r, 'Reading device settings')) settings = new Map(r.data.map(d => [d.entity_id, d]));
   if (haReady) await syncTempAlerts().catch(e => log("Couldn't save thermostat alerts into Home Assistant:", e.message));
   if (haReady) await syncGeneratorAlerts().catch(e => log("Couldn't save generator alerts into Home Assistant:", e.message));
+  if (haReady) await syncSolarAlerts().catch(e => log("Couldn't save solar alerts into Home Assistant:", e.message));
 }
 
 // ---------------------------------------------------------------- Thermostat alerts
@@ -872,6 +875,59 @@ async function syncGeneratorAlerts() {
     description: 'Made by the McDonald Home app — generator running / stopped / warnings / low battery.', triggers, conditions: [], actions: [{ choose }] });
   genHash = hash;
   log(`Generator alerts saved (${[status && 'status', batt && 'battery', warns.length && `${warns.length} warnings`].filter(Boolean).join(', ')})`);
+}
+
+// ---------------------------------------------------------------- Solar alerts
+// SolarEdge Modbus inverters: phone alert when one stops making power while the sun is up, stops answering,
+// or reports a problem. Paused with the "Solar alerts" switch (More > Alert settings), which the bridge creates.
+const seProblems = new Map();
+let solarHash = '', solarHelperTried = false;
+async function syncSolarAlerts() {
+  const inv = new Map();
+  for (const r of catalog.values()) {
+    if (r.platform !== 'solaredge_modbus' || r.kind !== 'sensor' || r.device_class !== 'power') continue;
+    if (/meter|batter|storage/i.test(r.entity_id + ' ' + r.device_name)) continue;
+    const k = r.device_name || r.entity_id; if (!inv.has(k)) inv.set(k, r.entity_id);
+  }
+  const aid = 'mh_solar_alerts';
+  const hash = JSON.stringify([[...inv], [...seProblems], notifyTargets()]);
+  if (hash === solarHash) return;
+  if (!inv.size) { solarHash = hash; return; }
+  if (!catalog.has('input_boolean.solar_alerts') && !solarHelperTried) {
+    solarHelperTried = true;
+    await haCall({ type: 'input_boolean/create', name: 'Solar alerts', icon: 'mdi:solar-power', initial: true }).catch(e => log('Making the Solar alerts switch:', e.message));
+    scheduleCatalog(5e3);
+  }
+  const send = (title, message, tag) => notifyTargets().map(t => ({ action: `notify.${t}`, data: { title, message,
+    data: { tag, priority: 'high', ttl: 0, channel: 'Home alerts', clickAction: `${APP_URL}/energy`, url: `${APP_URL}/energy` } } }));
+  const sunUp = `state_attr('sun.sun', 'elevation') | float(0) > 10`;
+  const w = id => `states('${id}') | float(0) * (1000 if 'k' in (state_attr('${id}', 'unit_of_measurement') or '') | lower else 1)`;
+  const triggers = [], choose = [], list = [...inv];
+  for (const [name, id] of list) {
+    const others = list.filter(([, o]) => o !== id).map(([, o]) => o);
+    const key = id.replace(/\W/g, '_');
+    // stopped: no power while the other inverter is clearly working (so clouds and snow don't set it off)
+    if (others.length) {
+      triggers.push({ trigger: 'template', value_template: `{{ ${sunUp} and (${w(id)}) < 50 and ${others.map(o => `(${w(o)}) > 1000`).join(' and ')} }}`, for: '00:30:00', id: `stop_${key}` });
+      choose.push({ conditions: [{ condition: 'trigger', id: `stop_${key}` }], sequence: send(`☀️ ${name} stopped making power`, `It's been at 0 W for 30 minutes while the other inverter is producing. Check the inverter's light and switch.`, `mh_solar_${key}`) });
+    }
+    // not answering in the daytime (it is normal for the inverters to go quiet at night)
+    triggers.push({ trigger: 'template', value_template: `{{ ${sunUp} and states('${id}') in ['unavailable', 'unknown'] }}`, for: '00:30:00', id: `off_${key}` });
+    choose.push({ conditions: [{ condition: 'trigger', id: `off_${key}` }], sequence: send(`☀️ ${name} isn't answering`, `Home Assistant hasn't heard from it for 30 minutes during daylight. It may be off, or its Wi-Fi dropped.`, `mh_solar_${key}`) });
+  }
+  // everything at 0 for an hour in good daylight
+  triggers.push({ trigger: 'template', value_template: `{{ state_attr('sun.sun', 'elevation') | float(0) > 15 and ${list.map(([, id]) => `(${w(id)}) < 50`).join(' and ')} }}`, for: '01:00:00', id: 'all_stop' });
+  choose.push({ conditions: [{ condition: 'trigger', id: 'all_stop' }], sequence: send('☀️ Solar isn\'t producing', 'Every inverter has been at 0 W for an hour in daylight. Check the inverters and the solar breaker.', 'mh_solar_all') });
+  for (const [id, name] of seProblems) {
+    const key = id.replace(/\W/g, '_');
+    triggers.push({ trigger: 'state', entity_id: id, to: 'on', for: '00:10:00', id: `prob_${key}` });
+    choose.push({ conditions: [{ condition: 'trigger', id: `prob_${key}` }], sequence: send(`⚠️ ${name || 'Inverter'} reports a problem`, 'The inverter is showing a fault. Check its light, or the SolarEdge app for the error.', `mh_solar_p_${key}`) });
+  }
+  await haConfig('POST', 'automation', aid, { id: aid, alias: 'Alert: Solar inverters', mode: 'queued',
+    description: 'Made by the McDonald Home app — an inverter stopped, stopped answering, or reports a problem. Pause with the Solar alerts switch.',
+    triggers, conditions: [{ condition: 'template', value_template: "{{ not is_state('input_boolean.solar_alerts', 'off') }}" }], actions: [{ choose }] });
+  solarHash = hash;
+  log(`Solar alerts saved (${inv.size} inverters${seProblems.size ? `, ${seProblems.size} problem sensors` : ''})`);
 }
 
 // ---------------------------------------------------------------- Routines

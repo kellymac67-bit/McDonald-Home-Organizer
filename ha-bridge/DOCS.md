@@ -39,3 +39,11 @@ inverter (red switch to P for 1–2 s, join its Wi-Fi, open 172.16.0.1 → Site 
 then add the integration with the inverter's IP, port 1502, device ID 1. A follower inverter is read through the
 leader with the same IP and device ID 2. The bridge (0.9.3+) sends each inverter's AC power and lifetime energy;
 the app adds them up and works out "today" from the history it records every 10 minutes.
+
+### Solar alerts (0.9.4+)
+The bridge saves an automation **Alert: Solar inverters** that sends a phone alert when, in daylight:
+- an inverter is at 0 W for 30 minutes while the other one is making over 1 kW,
+- an inverter stops answering for 30 minutes,
+- every inverter is at 0 W for an hour (sun more than 15° up), or
+- an inverter's Problem sensor stays on for 10 minutes.
+It also makes a **Solar alerts** switch (More > Alert settings) to pause them.
