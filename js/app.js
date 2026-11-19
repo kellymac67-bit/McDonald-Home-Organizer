@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.13.2';
+const VERSION = '2.13.3';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -173,7 +173,7 @@ const routes = [
   [/^\/b\/([^/]+)$/, viewBox], [/^\/loc\/([^/]+)$/, viewLoc],
   [/^\/places$/, viewPlaces], [/^\/scan$/, viewScan], [/^\/new$/, viewNewBox], [/^\/new-place$/, viewNewLoc],
   [/^\/devices$/, viewDeviceAdmin],
-  [/^\/routines$/, viewRoutines], [/^\/energy$/, viewEnergy], [/^\/sprinklers$/, viewSprinklers], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
+  [/^\/routines$/, viewRoutines], [/^\/energy$/, viewEnergy], [/^\/sprinklers$/, viewSprinklers], [/^\/alerts$/, viewAlerts], [/^\/tesla$/, viewTesla], [/^\/activity$/, viewActivity], [/^\/routine\/([^/]+)\/edit$/, viewRoutineEdit], [/^\/routine\/([^/]+)$/, viewRoutine],
   [/^\/more$/, viewMore], [/^\/labels$/, viewLabels], [/^\/categories$/, viewCats], [/^\/family$/, viewFamily],
 ];
 function render() {
@@ -1268,6 +1268,21 @@ function viewEnergy() {
   draw(); S.cleanup = pollDevices(draw, 30000);
 }
 
+// ---- Alert settings (on/off helpers like "Boiler alerts" and "Solar alerts") ----
+function viewAlerts() {
+  header('Alert settings', { backBtn: true }); tabs('more');
+  view().innerHTML = '<div id="alv" style="display:flex;flex-direction:column;gap:14px"></div>';
+  const draw = () => {
+    const el = $('#alv'); if (!el) return;
+    const list = settingSwitches().sort((a, b) => devName(a).localeCompare(devName(b)));
+    el.innerHTML = list.length ? `<div class="card" style="padding:2px 14px"><div class="list">${list.map(d => devRow(d, false)).join('')}</div></div>
+      <p class="small muted" style="margin:0">Turn one off to pause those phone alerts (for example, boiler alerts in summer). Thermostat cold/hot limits are set on the thermostat itself.</p>`
+      : '<div class="card muted">No alert switches yet.</div>';
+    wireDevices(el, draw);
+  };
+  draw(); S.cleanup = pollDevices(draw, 15000);
+}
+
 // ---- Sprinklers (Rachio) ----
 function viewSprinklers() {
   header('Sprinklers', { backBtn: true }); tabs('more');
@@ -1608,9 +1623,7 @@ function viewLights() {
         const on = list.filter(d => d.state === 'on').map(d => d.entity_id), offl = list.filter(d => d.state === 'off').map(d => d.entity_id);
         const bulk = !canControl() ? '' : on.length ? `<button class="btn sm" data-bulk="off" data-ids="${on.join(',')}">All off</button>` : offl.length > 1 ? `<button class="btn sm" data-bulk="on" data-ids="${offl.join(',')}">All on</button>` : '';
         return `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">${esc(place)}</div>${bulk}</div><div class="card" style="padding:2px 14px"><div class="list">${list.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => devRow(d, false)).join('')}</div></div></section>`;
-      }).join('') || '<div class="card muted">No lights or switches yet.</div>'}
-      ${settingSwitches().length ? `<section class="hsec"><div class="lab">Alert settings</div><div class="card" style="padding:2px 14px"><div class="list">${settingSwitches().map(d => devRow(d, false)).join('')}</div></div>
-        <p class="small muted" style="margin:0">Turn these off to pause those phone alerts (for example, boiler alerts in summer). They aren't lights, so "Turn off every light" leaves them alone.</p></section>` : ''}`;
+      }).join('') || '<div class="card muted">No lights or switches yet.</div>'}`;
     wireDevices(el, draw); wireScenes(el, draw);
   };
   draw();
@@ -2341,6 +2354,7 @@ function viewMore() {
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
       <a class="locrow" href="/energy"><span class="nm">⚡ Energy &amp; solar</span><span class="muted">${(() => { const e = energyState(); return e?.main ? esc(kw(watts(e.main))) + (e.solar ? ' · ☀️ ' + esc(kw(watts(e.solar))) : '') : 'not connected yet'; })()} ›</span></a>
       <a class="locrow" href="/activity"><span class="nm">Activity log</span><span class="muted">›</span></a>
+      ${settingSwitches().length ? `<a class="locrow" href="/alerts"><span class="nm">🔔 Alert settings</span><span class="muted">${settingSwitches().filter(d => d.state === 'on').length} of ${settingSwitches().length} on ›</span></a>` : ''}
       ${shownDevices().some(isSprinkler) ? '<a class="locrow" href="/sprinklers"><span class="nm">💧 Sprinklers</span><span class="muted">›</span></a>' : ''}
       ${carDevices().length ? `<a class="locrow" href="/tesla"><span class="nm">⚡ Tesla — ${esc(carName())}</span><span class="muted">›</span></a>` : ''}
       <a class="locrow" href="/routines"><span class="nm">Routines (Tesla checklists)</span><span class="count">${(S.routines || []).length}</span></a>
