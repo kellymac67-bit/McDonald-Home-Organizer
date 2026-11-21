@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.13.3';
+const VERSION = '2.13.4';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1073,14 +1073,21 @@ function openHistory(d) {
   if (!d) return;
   const unit = d.kind === 'climate' ? '°' : d.unit || d.attributes?.unit_of_measurement || '';
   let days = 1;
+  // other readings from the same sensor (a humidity sensor that also reads temperature, etc.)
+  const sibs = d.kind === 'sensor' && d.device_name ? (S.devices || []).filter(x => x !== d && x.kind === 'sensor' && x.device_name === d.device_name && !isCar(x)
+    && ['temperature', 'humidity', 'moisture', 'illuminance', 'pressure', 'battery'].includes(x.device_class) && !isNaN(parseFloat(x.state)))
+    .sort((a, b) => (a.device_class !== 'temperature') - (b.device_class !== 'temperature')) : [];
+  const label = x => ({ temperature: 'Temperature', humidity: 'Humidity', moisture: 'Moisture', illuminance: 'Light', pressure: 'Pressure', battery: 'Battery' })[x.device_class] || devName(x);
   const s = sheet(`<h3>${esc(d.kind === 'climate' ? devName(d) + ' — inside temperature' : devName(d))}</h3>
     <div class="row" style="justify-content:space-between;align-items:baseline"><span class="tbig" style="font-size:34px">${esc(d.kind === 'climate' ? tdeg(d.attributes?.current_temperature) : devValue(d).text)}</span><span class="small muted" id="hpick"></span></div>
+    ${sibs.length ? `<div class="chips">${sibs.map(x => `<button class="chip" data-sib="${esc(x.entity_id)}">${esc(label(x))} <b>${esc(devValue(x).text)}</b> ›</button>`).join('')}</div>` : ''}
     <div class="chips">${RANGES.map(([l, n]) => `<button class="chip" data-days="${n}" aria-pressed="${n === 1}">${l}</button>`).join('')}</div>
     <div id="hchart"><div class="camph" style="aspect-ratio:2/1">Loading…</div></div>
     <div class="small muted" id="hstats"></div>
     <div id="hact"></div>
     <button class="btn" id="hDone">Done</button>`);
   $('#hDone', s).onclick = closeSheet;
+  $$('[data-sib]', s).forEach(b => b.onclick = () => { const x = S.devices.find(y => y.entity_id === b.dataset.sib); closeSheet(); setTimeout(() => openHistory(x), 50); });
   const load = async () => {
     const [, n, bucket] = RANGES.find(r => r[1] === days);
     const { data, error } = await sb.rpc('ha_series', { p_entity: d.entity_id, p_since: new Date(Date.now() - n * 86400e3).toISOString(), p_bucket_minutes: bucket });
