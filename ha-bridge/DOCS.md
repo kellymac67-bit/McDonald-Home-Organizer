@@ -47,3 +47,7 @@ The bridge saves an automation **Alert: Solar inverters** that sends a phone ale
 - every inverter is at 0 W for an hour (sun more than 15° up), or
 - an inverter's Problem sensor stays on for 10 minutes.
 It also makes a **Solar alerts** switch (More > Alert settings) to pause them.
+
+### Camera battery alerts (0.9.8+)
+**Alert: Camera batteries** sends a phone alert when a battery camera (Ring) is below 20% for 10 minutes, and again below 10%.
+Pause with the **Battery alerts** switch (More > Alert settings).

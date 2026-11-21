@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.9.7';
+const VERSION = '0.9.8';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -149,7 +149,7 @@ async function buildCatalog() {
     if (e.entity_id.startsWith('camera.') && !e.disabled_by) cameraDevs.add(e.device_id);
   }
 
-  seProblems.clear();
+  seProblems.clear(); camBatteries.clear();
   const rows = new Map(), dOf = new Map(), cOf = new Map(), mOf = new Map(), defaults = new Map();
   for (const e of entities) {
     if (e.disabled_by || e.hidden_by) continue;
@@ -170,6 +170,8 @@ async function buildCatalog() {
          || (domain === 'sensor' && dc === 'timestamp' && /_last_activity$/.test(e.entity_id))))
       mOf.set(e.entity_id, e.device_id);
 
+    if (domain === 'sensor' && dc === 'battery' && cameraDevs.has(e.device_id) && batteryDevs.has(e.device_id) && !isNaN(parseFloat(s.state)))
+      camBatteries.set(e.entity_id, dev ? (dev.name_by_user || dev.name || '') : e.entity_id);
     if (e.platform === 'solaredge_modbus' && domain === 'binary_sensor' && dc === 'problem') seProblems.set(e.entity_id, dev ? (dev.name_by_user || dev.name || '') : '');
     if (e.entity_category && e.platform !== 'tesla_wall_connector') continue;   // skip settings / diagnostics (the Wall Connector's plug sensor is one)
     let kind = null;
@@ -254,6 +256,7 @@ async function loadSettings() {
   if (haReady) await syncTempAlerts().catch(e => log("Couldn't save thermostat alerts into Home Assistant:", e.message));
   if (haReady) await syncGeneratorAlerts().catch(e => log("Couldn't save generator alerts into Home Assistant:", e.message));
   if (haReady) await syncSolarAlerts().catch(e => log("Couldn't save solar alerts into Home Assistant:", e.message));
+  if (haReady) await syncBatteryAlerts().catch(e => log("Couldn't save camera battery alerts into Home Assistant:", e.message));
 }
 
 // ---------------------------------------------------------------- Thermostat alerts
@@ -958,6 +961,40 @@ async function syncSolarAlerts() {
     triggers, conditions: [{ condition: 'template', value_template: "{{ not is_state('input_boolean.solar_alerts', 'off') }}" }], actions: [{ choose }] });
   solarHash = hash;
   log(`Solar alerts saved (${inv.size} inverters${seProblems.size ? `, ${seProblems.size} problem sensors` : ''})`);
+}
+
+// ---------------------------------------------------------------- Camera battery alerts
+// Battery cameras (Ring): phone alert when the battery drops below 20%, and again below 10%.
+// Paused with the "Battery alerts" switch (More > Alert settings), which the bridge creates.
+const camBatteries = new Map();
+let battHash = '', battHelperTried = false;
+async function syncBatteryAlerts() {
+  const aid = 'mh_camera_battery_alerts';
+  const list = [...camBatteries];
+  const hash = JSON.stringify([list, notifyTargets()]);
+  if (hash === battHash) return;
+  if (!list.length) { battHash = hash; return; }
+  if (!catalog.has('input_boolean.battery_alerts') && !battHelperTried) {
+    battHelperTried = true;
+    await haCall({ type: 'input_boolean/create', name: 'Battery alerts', icon: 'mdi:battery-alert', initial: true }).catch(e => log('Making the Battery alerts switch:', e.message));
+    scheduleCatalog(5e3);
+  }
+  const triggers = [], choose = [];
+  for (const [id, name] of list) {
+    const key = id.replace(/\W/g, '_'), cam = String(name).replace(/\s*(live view|camera)$/i, '').trim() || 'A camera';
+    for (const lvl of [20, 10]) {
+      triggers.push({ trigger: 'numeric_state', entity_id: id, below: lvl, for: '00:10:00', id: `b${lvl}_${key}` });
+      choose.push({ conditions: [{ condition: 'trigger', id: `b${lvl}_${key}` }], sequence: notifyTargets().map(t => ({ action: `notify.${t}`, data: {
+        title: `🔋 ${cam} camera battery ${lvl === 10 ? 'is almost dead' : 'is low'}`,
+        message: `It's at {{ states('${id}') | int(0) }}%. ${lvl === 10 ? 'It will stop recording soon — charge or swap the battery.' : 'Charge or swap the battery soon.'}`,
+        data: { tag: `mh_batt_${key}`, priority: 'high', ttl: 0, channel: 'Home alerts', clickAction: `${APP_URL}/cameras`, url: `${APP_URL}/cameras` } } })) });
+    }
+  }
+  await haConfig('POST', 'automation', aid, { id: aid, alias: 'Alert: Camera batteries', mode: 'queued',
+    description: 'Made by the McDonald Home app — battery cameras below 20% and 10%. Pause with the Battery alerts switch.',
+    triggers, conditions: [{ condition: 'template', value_template: "{{ not is_state('input_boolean.battery_alerts', 'off') }}" }], actions: [{ choose }] });
+  battHash = hash;
+  log(`Camera battery alerts saved (${list.length}: ${list.map(([, n]) => n).join(', ')})`);
 }
 
 // ---------------------------------------------------------------- Routines
