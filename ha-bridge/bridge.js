@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.9.8';
+const VERSION = '0.9.9';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -149,7 +149,7 @@ async function buildCatalog() {
     if (e.entity_id.startsWith('camera.') && !e.disabled_by) cameraDevs.add(e.device_id);
   }
 
-  seProblems.clear(); camBatteries.clear();
+  seProblems.clear(); camBatteries.clear(); const tapoCams = new Set();
   const rows = new Map(), dOf = new Map(), cOf = new Map(), mOf = new Map(), defaults = new Map();
   for (const e of entities) {
     if (e.disabled_by || e.hidden_by) continue;
@@ -214,6 +214,16 @@ async function buildCatalog() {
       dOf.set(e.entity_id, e.device_id);
       if (kind === 'camera') cOf.set(e.device_id, [...(cOf.get(e.device_id) || []), e.entity_id]);
     }
+    if (kind === 'camera' && e.platform === 'tapo_control') tapoCams.add(e.entity_id);
+  }
+  // Tapo cameras come with several streams (HD, SD, …) — show just one per camera, the HD one
+  for (const [devId, cams] of cOf) {
+    const tapo = cams.filter(id => tapoCams.has(id));
+    if (tapo.length < 2) continue;
+    const keep = tapo.find(id => /(^|_)hd(_|$)|hd.?stream/i.test(id + ' ' + (rows.get(id)?.name || '')) && !/(^|_)sd(_|$)/i.test(id))
+      || tapo.find(id => !/(^|_)sd(_|$)|generic|mjpeg/i.test(id)) || tapo[0];
+    for (const id of tapo) if (id !== keep) rows.delete(id);
+    cOf.set(devId, cams.filter(id => id === keep || !tapo.includes(id)));
   }
 
   // sync with the app database (keeping snapshot/motion info we already have)
