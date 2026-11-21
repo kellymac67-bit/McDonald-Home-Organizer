@@ -55,3 +55,8 @@ Pause with the **Battery alerts** switch (More > Alert settings).
 ### Generator outage boost (0.9.10+, needs the Generac integration 0.6.0+)
 **Generator: Outage boost** asks Mobile Link for updates every 2 minutes for 30 minutes when Sense stops reporting
 or reads under 20 W, or when Home Assistant starts (a power outage restarts the Pi).
+
+### Near-live view (1.0.1+)
+For cameras without Ring's own live video (Kasa through Scrypted, Tapo…), the app's **▶ Live** button asks the bridge to send
+a fresh picture about once a second to `cams/<camera>/live.jpg` while someone is watching. The app re-asks every minute;
+the bridge stops 90 s after the last ask (or right away when the viewer taps Stop), and the app stops after 5 minutes.

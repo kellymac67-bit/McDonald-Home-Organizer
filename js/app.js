@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.13.5';
+const VERSION = '2.14.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -725,7 +725,7 @@ function openImage(path, caption) {
 }
 async function openCamera(d, redraw) {
   if (!d) return;
-  const live = d.platform === 'ring' ? '<button class="btn" id="camLive">▶ Live</button>' : '';
+  const live = '<button class="btn" id="camLive">▶ Live</button>';
   const s = sheet(`<h3>${esc(devName(d))}</h3>
     <div class="camview" id="camImg"></div>
     <div class="small muted" id="camMeta"></div><div class="small" id="liveState" hidden></div>
@@ -740,7 +740,7 @@ async function openCamera(d, redraw) {
   };
   draw();
   const lb = $('#camLive', s);
-  if (lb) lb.onclick = () => live_ && live_.entity === d.entity_id ? (stopLive(), lb.textContent = '▶ Live', draw()) : startLive(d, s, draw);
+  if (lb) lb.onclick = () => live_ && live_.entity === d.entity_id ? (stopLive(), lb.textContent = '▶ Live', draw()) : d.platform === 'ring' ? startLive(d, s, draw) : startFrameLive(d, s, draw);
   $('#camRef', s).onclick = async () => {
     const b = $('#camRef', s); b.disabled = true; b.textContent = 'Asking the camera…';
     const ok = await sendCommand(d, 'snapshot');
@@ -807,8 +807,50 @@ async function startLive(d, s, redraw) {
     setLive('Starting video…');
   } catch (e) { console.error(e); fail(`Live view didn't start: ${e.message}`); }
 }
+// Near-live for Kasa / Tapo / other cameras: the bridge sends a new picture about once a second while we watch.
+async function startFrameLive(d, s, redraw) {
+  stopLive();
+  const lb = $('#camLive', s); if (lb) lb.textContent = '■ Stop';
+  const box = $('#camImg', s);
+  box.innerHTML = '<img id="liveImg" alt="">';
+  setLive('Starting live view…');
+  const ask = live => sb.from('ha_commands').insert({ entity_id: d.entity_id, action: 'snapshot', payload: { live } }).then(({ error }) => { if (error) throw error; });
+  const mine = live_ = { entity: d.entity_id, frames: true, ask, url: '', last: '', lastAt: 0, started: Date.now(), timers: [] };
+  const end = msg => { if (live_ !== mine) return; stopLive(); if (lb) lb.textContent = '▶ Live'; redraw?.(); if (msg) toast(msg, 4000); };
+  mine.timer = setTimeout(() => end('Live view stopped after 5 minutes'), 5 * 60000);
+  try {
+    if (!bridgeOnline()) toast('The house looks offline — trying anyway…', 3000);
+    await ask(true);
+    mine.timers.push(setInterval(() => { if (live_ === mine) ask(true).catch(() => {}); }, 60000));
+    const { data, error } = await sb.storage.from('cams').createSignedUrl(`${d.entity_id}/live.jpg`, 600);
+    if (error) throw error;
+    mine.url = data.signedUrl;
+  } catch (e) { return end(`Live view didn't start: ${e.message}`); }
+  let busy = false;
+  const tick = async () => {
+    if (live_ !== mine || busy) return; busy = true;
+    try {
+      const r = await fetch(`${mine.url}${mine.url.includes('?') ? '&' : '?'}t=${Date.now()}`, { cache: 'no-store' });
+      if (r.ok) {
+        const mod = r.headers.get('last-modified') || r.headers.get('etag') || '';
+        const blob = await r.blob();
+        if (live_ !== mine) return;
+        const sig = mod + ':' + blob.size;
+        if (sig !== mine.last) {
+          mine.last = sig; mine.lastAt = Date.now();
+          const img = $('#liveImg'); if (img) { const old = img.src; img.src = URL.createObjectURL(blob); if (old.startsWith('blob:')) setTimeout(() => URL.revokeObjectURL(old), 2000); }
+        }
+      }
+      const age = mine.lastAt ? Math.round((Date.now() - mine.lastAt) / 1000) : null;
+      setLive(age === null ? (Date.now() - mine.started > 20000 ? 'Still waiting for the camera…' : 'Starting live view…') : age <= 4 ? '● Live · refreshes about every second' : `● Live · last picture ${age}s ago`);
+    } catch {} finally { busy = false; }
+  };
+  mine.timers.push(setInterval(tick, 1000));
+  setTimeout(tick, 1500);
+}
 function stopLive() {
   if (!live_) return; const l = live_; live_ = null; clearTimeout(l.timer);
+  if (l.frames) { l.timers.forEach(clearInterval); l.ask('stop').catch(() => {}); const img = $('#liveImg'); if (img?.src.startsWith('blob:')) URL.revokeObjectURL(img.src); return; }
   try { l.pc.close(); } catch {}
   if (l.session) callRing({ action: 'whep_stop', device_id: l.id, session: l.session }).catch(() => {});
 }

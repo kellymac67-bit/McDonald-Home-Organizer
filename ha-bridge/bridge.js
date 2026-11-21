@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.1';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -381,6 +381,40 @@ async function takeSnapshot(entityId, reason) {
   } finally { busy.delete(entityId); }
 }
 
+// ---- Near-live view (cameras without Ring's own live video): while someone is watching, send a fresh
+// picture about once a second to cams/<camera>/live.jpg. The app asks again every minute; it stops 90 s after the last ask.
+const liveUntil = new Map();
+let liveRunning = false;
+function startLiveFrames(entityId) {
+  if (!liveUntil.has(entityId)) log(`Live view started: ${catalog.get(entityId)?.name || entityId}`);
+  liveUntil.set(entityId, Date.now() + 90e3);
+  if (!liveRunning) liveLoop().catch(e => { liveRunning = false; log('Live view stopped:', e.message); });
+}
+async function liveLoop() {
+  liveRunning = true;
+  const fails = new Map();
+  while (liveUntil.size) {
+    const t0 = Date.now();
+    for (const [id, until] of [...liveUntil]) {
+      if (until < Date.now()) { liveUntil.delete(id); fails.delete(id); continue; }
+      try {
+        const r = await fetch(`${HA_API}/camera_proxy/${id}`, { headers: { Authorization: `Bearer ${TOKEN}` }, signal: AbortSignal.timeout(10e3) });
+        if (!r.ok) throw new Error(`camera answered ${r.status}`);
+        const img = Buffer.from(await r.arrayBuffer());
+        const up = await sb.storage.from('cams').upload(`${id}/live.jpg`, img, { contentType: r.headers.get('content-type') || 'image/jpeg', upsert: true, cacheControl: '0' });
+        if (up.error) throw new Error(up.error.message);
+        fails.delete(id);
+      } catch (e) {
+        const n = (fails.get(id) || 0) + 1; fails.set(id, n);
+        if (n === 5) log(`Live view for ${id} isn't getting pictures:`, e.message);
+        if (n >= 30) liveUntil.delete(id);
+      }
+    }
+    await new Promise(res => setTimeout(res, Math.max(250, 1000 - (Date.now() - t0))));
+  }
+  liveRunning = false;
+}
+
 const firstTried = new Set();
 async function snapshotRound() {
   if (!haReady) return;
@@ -424,7 +458,9 @@ async function pollCommands() {
         } else if (!row || !s?.enabled) { throw new Error('Device not available');
         } else if (c.action === 'snapshot') {
           if (row.kind !== 'camera') throw new Error('Not a camera');
-          await takeSnapshot(c.entity_id, 'request');
+          if (c.payload?.live === 'stop') liveUntil.delete(c.entity_id);
+          else if (c.payload?.live) startLiveFrames(c.entity_id);
+          else await takeSnapshot(c.entity_id, 'request');
         } else if (c.action === 'open' || c.action === 'close') {
           if (row.kind !== 'cover') throw new Error('Not a garage door');
           await haCall({ type: 'call_service', domain: 'cover', service: c.action === 'open' ? 'open_cover' : 'close_cover', target: { entity_id: c.entity_id } });
