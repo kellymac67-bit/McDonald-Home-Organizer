@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.9.6';
+const VERSION = '0.9.7';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -611,23 +611,35 @@ let modbusMap = {}; try { modbusMap = JSON.parse(fs.readFileSync(MODBUS_MAP_FILE
 const cloudById = new Map();     // Monnit sensor ID → latest row from iMonnit
 const localById = new Map();     // Monnit sensor ID → { state, at } read from the gateway
 let modbusTid = 0, modbusNote = '';
-function modbusRead(host, port, addr, count) {
+// One TCP connection per round, requests sent one after another (the gateway allows few connections).
+function modbusOpen(host, port) {
   return new Promise((resolve, reject) => {
-    const tid = (modbusTid = (modbusTid + 1) & 0xffff), req = Buffer.alloc(12);
-    req.writeUInt16BE(tid, 0); req.writeUInt16BE(0, 2); req.writeUInt16BE(6, 4); req.writeUInt8(1, 6);
-    req.writeUInt8(3, 7); req.writeUInt16BE(addr, 8); req.writeUInt16BE(count, 10);
-    const sock = net.connect({ host, port }); let buf = Buffer.alloc(0), done = false;
-    const end = (err, val) => { if (done) return; done = true; sock.destroy(); err ? reject(err) : resolve(val); };
-    sock.setTimeout(8000, () => end(new Error('gateway did not answer')));
-    sock.on('error', e => end(e));
-    sock.on('connect', () => sock.write(req));
+    const sock = net.connect({ host, port }); let buf = Buffer.alloc(0), waiting = null, closed = false;
+    const fail = e => { closed = true; if (waiting) { const w = waiting; waiting = null; w.reject(e); } };
+    sock.setTimeout(8000, () => { fail(new Error('gateway did not answer')); sock.destroy(); });
+    sock.on('error', e => { fail(e); reject(e); });
+    sock.on('close', () => fail(new Error('gateway closed the connection')));
     sock.on('data', d => {
       buf = Buffer.concat([buf, d]);
-      if (buf.length < 9) return;
-      if (buf.readUInt8(7) & 0x80) return end(new Error(`gateway refused (code ${buf.readUInt8(8)})`));
+      if (!waiting || buf.length < 9) return;
+      const w = waiting;
+      if (buf.readUInt8(7) & 0x80) { const code = buf.readUInt8(8); waiting = null; buf = Buffer.alloc(0); return w.reject(new Error(`gateway refused the request (code ${code})`)); }
       const n = buf.readUInt8(8); if (buf.length < 9 + n) return;
-      end(null, Array.from({ length: n / 2 }, (_, i) => buf.readUInt16BE(9 + i * 2)));
+      const out = Array.from({ length: n / 2 }, (_, i) => buf.readUInt16BE(9 + i * 2));
+      waiting = null; buf = Buffer.alloc(0); w.resolve(out);
     });
+    sock.on('connect', () => resolve({
+      read(addr, count) {
+        return new Promise((res, rej) => {
+          if (closed) return rej(new Error('gateway closed the connection'));
+          const tid = (modbusTid = (modbusTid + 1) & 0xffff), req = Buffer.alloc(12);
+          req.writeUInt16BE(tid, 0); req.writeUInt16BE(0, 2); req.writeUInt16BE(6, 4); req.writeUInt8(1, 6);
+          req.writeUInt8(3, 7); req.writeUInt16BE(addr, 8); req.writeUInt16BE(count, 10);
+          waiting = { resolve: res, reject: rej }; sock.write(req);
+        });
+      },
+      close() { closed = true; sock.end(); setTimeout(() => sock.destroy(), 500); },
+    }));
   });
 }
 const s16 = v => v > 32767 ? v - 65536 : v;
@@ -645,13 +657,20 @@ function modbusValue(key, data) {
   let v = (signed ? s16(data[i]) : data[i]) / div; if (f) v = c2f(v);
   return v;
 }
+let modbusConn = '';
 async function modbusRound() {
   if (!GW_IP) return;
   const [host, port] = GW_IP.includes(':') ? [GW_IP.split(':')[0], +GW_IP.split(':')[1]] : [GW_IP, 502];
-  const head = await modbusRead(host, port, 0, 5);
-  const count = Math.min(Math.max(head[4] || 0, 1), 64);
+  let conn;
+  try { conn = await modbusOpen(host, port); }
+  catch (e) { if (modbusConn !== 'fail:' + e.code) { modbusConn = 'fail:' + e.code; log(`Monnit gateway at ${host}:${port}: can't connect (${e.code || e.message})`); } throw e; }
+  if (modbusConn !== 'ok') { modbusConn = 'ok'; log(`Monnit gateway at ${host}:${port}: connected`); }
   const regs = [];
-  for (let slot = 0; slot < count + 4; slot += 7) regs.push(...await modbusRead(host, port, 100 + slot * 16, 16 * 7));
+  try {
+    const head = await conn.read(0, 5);
+    const count = Math.min(Math.max(head[4] || 0, 1), 64);
+    for (let slot = 0; slot < count + 4; slot += 7) regs.push(...await conn.read(100 + slot * 16, 16 * 7));
+  } finally { conn.close(); }
   let seen = 0, learned = 0, applied = 0;
   for (let b = 0; b + 16 <= regs.length; b += 16) {
     const blk = regs.slice(b, b + 16), id = blk[0] * 65536 + blk[1];
