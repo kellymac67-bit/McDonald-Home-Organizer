@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.9.5';
+const VERSION = '0.9.6';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -593,7 +593,7 @@ function parseMonnit(m) {
   if (last && Date.now() - Date.parse(last) > 6 * 3600e3) state = 'unavailable';   // silent for 6 h
   const name = String(m.SensorName || `Monnit ${m.SensorID}`).replace(new RegExp(`\\s*[-–]\\s*${m.SensorID}\\s*$`), '').trim();
   return {
-    entity_id: `${kind}.monnit_${slug(name)}`, kind, name, device_name: 'Monnit', ha_area: '',
+    entity_id: `${kind}.monnit_${slug(name)}`, kind, name, device_name: `Monnit ${name}`, ha_area: '',
     device_class: dc, unit, on_battery: true, ...(hasPlatform ? { platform: 'monnit' } : {}),
     state, last_changed: last,
     attributes: { reading, battery_level: m.BatteryLevel, signal: m.SignalStrength, monnit_id: m.SensorID,
@@ -702,8 +702,19 @@ async function monnitRound() {
   const j = await r.json();
   if (!Array.isArray(j.Result)) throw new Error('iMonnit: ' + (typeof j.Result === 'string' ? j.Result : 'unexpected answer — check the API keys'));
   const rows = j.Result.map(parseMonnit);
+  // humidity sensors also report temperature ("65.9% @ 47.3° F") — give that its own reading, grouped with the sensor
+  for (const x of [...rows]) {
+    const t = x.device_class === 'humidity' && String(x.attributes.reading).match(/@\s*(-?\d+(?:\.\d+)?)\s*°\s*([FC])/i);
+    if (!t) continue;
+    const unit = `°${t[2].toUpperCase()}`;
+    rows.push({ ...x, entity_id: `sensor.monnit_${slug(x.name.replace(/\s*humidity\s*/i, ' ').trim() || x.name)}_temperature`,
+      name: `${x.name.replace(/\s*humidity\s*/i, ' ').trim() || x.name} temperature`, device_class: 'temperature', unit,
+      state: x.state === 'unavailable' ? 'unavailable' : t[1],
+      attributes: { ...x.attributes, companion: true, unit_of_measurement: unit, device_class: 'temperature', friendly_name: `${x.name} temperature` } });
+  }
   // a newer local reading from the gateway wins over an older iMonnit one
   for (const x of rows) {
+    if (x.attributes.companion) continue;
     const id = String(x.attributes.monnit_id), loc = localById.get(id);
     if (loc && loc.at > Date.parse(x.last_changed || 0)) { x.state = loc.state; x.last_changed = new Date(loc.at).toISOString(); x.attributes.source = 'Monnit gateway (local)'; }
     cloudById.set(id, x);

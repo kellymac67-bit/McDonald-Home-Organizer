@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.13.4';
+const VERSION = '2.13.5';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1074,7 +1074,7 @@ function openHistory(d) {
   const unit = d.kind === 'climate' ? '°' : d.unit || d.attributes?.unit_of_measurement || '';
   let days = 1;
   // other readings from the same sensor (a humidity sensor that also reads temperature, etc.)
-  const sibs = d.kind === 'sensor' && d.device_name ? (S.devices || []).filter(x => x !== d && x.kind === 'sensor' && x.device_name === d.device_name && !isCar(x)
+  const sibs = d.kind === 'sensor' && d.device_name && d.device_name !== 'Monnit' ? (S.devices || []).filter(x => x !== d && x.kind === 'sensor' && x.device_name === d.device_name && !isCar(x)
     && ['temperature', 'humidity', 'moisture', 'illuminance', 'pressure', 'battery'].includes(x.device_class) && !isNaN(parseFloat(x.state)))
     .sort((a, b) => (a.device_class !== 'temperature') - (b.device_class !== 'temperature')) : [];
   const label = x => ({ temperature: 'Temperature', humidity: 'Humidity', moisture: 'Moisture', illuminance: 'Light', pressure: 'Pressure', battery: 'Battery' })[x.device_class] || devName(x);
