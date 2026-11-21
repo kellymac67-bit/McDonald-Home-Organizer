@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '0.9.9';
+const VERSION = '0.9.10';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -889,7 +889,8 @@ async function syncGeneratorAlerts() {
   const batt = gen.find(r => r.kind === 'sensor' && /batter/.test(r.entity_id));
   const warns = gen.filter(r => r.kind === 'binary_sensor' && /warning|alarm|fault|maintenance/.test(r.entity_id));
   const aid = 'mh_generator_alerts';
-  const hash = JSON.stringify([status?.entity_id, batt?.entity_id, warns.map(w => w.entity_id), notifyTargets()]);
+  const senseMain = [...catalog.values()].find(r => r.platform === 'sense' && r.kind === 'sensor' && r.device_class === 'power' && /energy_usage|active_usage|usage$/i.test(r.entity_id) && !/production/i.test(r.entity_id))?.entity_id;
+  const hash = JSON.stringify([status?.entity_id, batt?.entity_id, warns.map(w => w.entity_id), notifyTargets(), senseMain, 'boost1']);
   if (hash === genHash) return;
   if (!status && !batt && !warns.length) { genHash = hash; return; }
   const send = (title, message, extra = {}) => notifyTargets().map(t => ({ action: `notify.${t}`, data: { title, message,
@@ -914,10 +915,22 @@ async function syncGeneratorAlerts() {
     triggers.push({ trigger: 'numeric_state', entity_id: batt.entity_id, below: 12.2, for: '00:30:00', id: 'battery' });
     choose.push({ conditions: [{ condition: 'trigger', id: 'battery' }], sequence: send('🔋 Generator battery low', `Battery reads {{ states('${batt.entity_id}') }} V. It may not start when the power goes out.`) });
   }
+  // Outage Boost (Generac integration 0.6+): poll Mobile Link every 2 min for 30 min when the power looks like it went out —
+  // Sense stops reporting or reads ~0 W, or Home Assistant just started (an outage restarts the Pi).
+  const sense = [...catalog.values()].filter(r => r.platform === 'sense' && r.kind === 'sensor' && r.device_class === 'power');
+  const main = sense.find(r => /energy_usage|active_usage|usage$/i.test(r.entity_id) && !/production/i.test(r.entity_id));
+  const boostTriggers = [{ trigger: 'homeassistant', event: 'start' }];
+  if (main) {
+    boostTriggers.push({ trigger: 'state', entity_id: main.entity_id, to: ['unavailable', 'unknown'], for: '00:01:00' });
+    boostTriggers.push({ trigger: 'numeric_state', entity_id: main.entity_id, below: 20, for: '00:00:30' });
+  }
+  await haConfig('POST', 'automation', 'mh_generator_boost', { id: 'mh_generator_boost', alias: 'Generator: Outage boost', mode: 'single',
+    description: 'Made by the McDonald Home app — when the power looks out, ask Generac Mobile Link for updates every 2 minutes for 30 minutes.',
+    triggers: boostTriggers, conditions: [], actions: [{ action: 'generac.boost_polling', data: { duration_minutes: 30 }, continue_on_error: true }] });
   await haConfig('POST', 'automation', aid, { id: aid, alias: 'Alert: Generator', mode: 'queued',
     description: 'Made by the McDonald Home app — generator running / stopped / warnings / low battery.', triggers, conditions: [], actions: [{ choose }] });
   genHash = hash;
-  log(`Generator alerts saved (${[status && 'status', batt && 'battery', warns.length && `${warns.length} warnings`].filter(Boolean).join(', ')})`);
+  log(`Generator alerts + outage boost saved (${[status && 'status', batt && 'battery', warns.length && `${warns.length} warnings`].filter(Boolean).join(', ')})`);
 }
 
 // ---------------------------------------------------------------- Solar alerts

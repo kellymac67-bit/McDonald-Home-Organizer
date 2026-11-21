@@ -51,3 +51,7 @@ It also makes a **Solar alerts** switch (More > Alert settings) to pause them.
 ### Camera battery alerts (0.9.8+)
 **Alert: Camera batteries** sends a phone alert when a battery camera (Ring) is below 20% for 10 minutes, and again below 10%.
 Pause with the **Battery alerts** switch (More > Alert settings).
+
+### Generator outage boost (0.9.10+, needs the Generac integration 0.6.0+)
+**Generator: Outage boost** asks Mobile Link for updates every 2 minutes for 30 minutes when Sense stops reporting
+or reads under 20 W, or when Home Assistant starts (a power outage restarts the Pi).
