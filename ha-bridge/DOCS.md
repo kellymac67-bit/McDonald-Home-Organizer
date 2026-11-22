@@ -60,3 +60,8 @@ or reads under 20 W, or when Home Assistant starts (a power outage restarts the 
 For cameras without Ring's own live video (Kasa through Scrypted, Tapo…), the app's **▶ Live** button asks the bridge to send
 a fresh picture about once a second to `cams/<camera>/live.jpg` while someone is watching. The app re-asks every minute;
 the bridge stops 90 s after the last ask (or right away when the viewer taps Stop), and the app stops after 5 minutes.
+
+### Off timers (1.0.2+, run supabase/014_off_timers.sql once)
+Lights tab → **⏲ Timer** on any room (e.g. Tree House) → pick 15 min … 4 hours (or any number of minutes, up to 24 h) and
+which lights/switches. The bridge keeps the timer in `/data/off_timers.json` (survives a restart), turns those devices off
+when it ends, and lists active timers in `ha_bridge_status.timers` so the app shows a countdown with **Change** / **Cancel**.

@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '1.0.1';
+const VERSION = '1.0.2';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -451,6 +451,8 @@ async function pollCommands() {
         if (Date.now() - Date.parse(c.requested_at) > maxAge) throw new Error('Expired — the house was offline');
         if (c.action.startsWith('scene_')) {
           await runSceneCommand(c);
+        } else if (c.action === 'bulk_off' && (c.payload?.timer || c.payload?.cancel_timer)) {
+          result = setOffTimer(c);
         } else if (c.action.startsWith('bulk_')) {
           const ids = (c.payload?.entity_ids || []).filter(id => ['switch', 'light'].includes(catalog.get(id)?.kind) && settings.get(id)?.enabled);
           if (!ids.length) throw new Error('Nothing to switch');
@@ -805,12 +807,62 @@ async function monnitRound() {
   if (rows.length !== monnitCount) { monnitCount = rows.length; log(`Monnit: ${rows.length} sensors — ${rows.map(x => `${x.name} ${x.state}${x.unit}`).join(', ')}`); }
 }
 
+// ---------------------------------------------------------------- Off timers
+// "Turn off the Tree House in 45 minutes": kept in /data so they survive a bridge restart,
+// listed in ha_bridge_status.timers so the app can show, change and cancel them.
+const TIMERS_FILE = '/data/off_timers.json';
+let offTimers = [];
+try { offTimers = JSON.parse(fs.readFileSync(TIMERS_FILE, 'utf8')); } catch {}
+let hasTimerCol = true;
+function saveTimers() {
+  try { fs.writeFileSync(TIMERS_FILE, JSON.stringify(offTimers)); } catch (e) { log('Saving timers:', e.message); }
+  if (hasTimerCol) sb.from('ha_bridge_status').update({ timers: offTimers }).eq('id', 1).then(r => {
+    if (r.error) { if (/timers/.test(r.error.message)) { hasTimerCol = false; log('Off timers: run supabase/014_off_timers.sql so the app can show them'); } else log('Publishing timers:', r.error.message); }
+  });
+}
+function setOffTimer(c) {
+  const p = c.payload;
+  if (p.cancel_timer) {
+    const t = offTimers.find(x => x.id === p.cancel_timer);
+    offTimers = offTimers.filter(x => x.id !== p.cancel_timer); saveTimers();
+    if (t) log(`Off timer cancelled: ${t.label} (by ${c.requested_by})`);
+    return t ? `Cancelled ${t.label}` : 'Timer already gone';
+  }
+  const mins = Math.round(Number(p.timer.minutes));
+  if (!(mins >= 1 && mins <= 24 * 60)) throw new Error('Pick between 1 minute and 24 hours');
+  const ids = (p.entity_ids || []).filter(id => ['switch', 'light'].includes(catalog.get(id)?.kind));
+  if (!ids.length) throw new Error('Nothing to switch');
+  const label = String(p.timer.label || 'Lights').slice(0, 60);
+  const at = new Date(Date.now() + mins * 60e3).toISOString();
+  offTimers = offTimers.filter(x => x.label !== label);           // one timer per place: a new one replaces the old
+  offTimers.push({ id: `t${Date.now().toString(36)}`, label, entity_ids: ids, at, by: c.requested_by, set_at: new Date().toISOString() });
+  saveTimers();
+  log(`Off timer: ${label} in ${mins} min (${ids.length} devices, by ${c.requested_by})`);
+  return `${label} off in ${mins} min`;
+}
+async function runOffTimers() {
+  if (!haReady || !offTimers.length) return;
+  const due = offTimers.filter(t => Date.parse(t.at) <= Date.now());
+  if (!due.length) return;
+  for (const t of due) {
+    const ids = t.entity_ids.filter(id => catalog.has(id));
+    try {
+      if (ids.length) await haCall({ type: 'call_service', domain: 'homeassistant', service: 'turn_off', target: { entity_id: ids } });
+      const until = Date.now() + 60e3;
+      for (const id of ids) recentBy.set(id, { by: `Timer · ${t.label}`, until });
+      log(`Off timer done: ${t.label} (${ids.length} devices)`);
+    } catch (e) { log(`Off timer ${t.label} failed:`, e.message); }
+  }
+  offTimers = offTimers.filter(t => !due.includes(t)); saveTimers();
+}
+
 // ---------------------------------------------------------------- Housekeeping
 async function heartbeat() {
   ok(await sb.from('ha_bridge_status').upsert({
     id: 1, last_seen: new Date().toISOString(), version: VERSION, ha_version: haVersion,
     message: haReady ? `OK — ${catalog.size} devices` : 'Not connected to Home Assistant',
-  }), 'Heartbeat');
+    ...(hasTimerCol ? { timers: offTimers } : {}),
+  }).then(r => { if (r.error && /timers/.test(r.error.message)) { hasTimerCol = false; return sb.from('ha_bridge_status').upsert({ id: 1, last_seen: new Date().toISOString(), version: VERSION, ha_version: haVersion, message: 'OK' }); } return r; }), 'Heartbeat');
 }
 
 async function cleanup() {
@@ -1125,6 +1177,7 @@ await startHa();
 every(2e3, pollCommands);
 every(3e3, flush);
 every(60e3, heartbeat);
+every(15e3, runOffTimers);
 every(60e3, loadSettings);
 every(60e3, snapshotRound);
 every(3600e3, cleanup);

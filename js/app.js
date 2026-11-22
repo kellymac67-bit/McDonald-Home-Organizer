@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.14.0';
+const VERSION = '2.15.0';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1077,6 +1077,62 @@ function wireScenes(root, redraw) {
     const ok = await sendRaw({ action: `bulk_${act}`, payload: { entity_ids: ids } }, act === 'on' ? 'Turned on' : 'Turned off');
     await sleep(ok ? 2500 : 0); await loadDevices().catch(() => {}); redraw();
   });
+  $$('[data-timer]', root).forEach(b => b.onclick = () => openOffTimer(b.dataset.timer, b.dataset.ids.split(',').filter(Boolean), redraw));
+}
+
+// ---- Off timers ("turn off the Tree House in 45 minutes") — run by the bridge, listed in ha_bridge_status.timers ----
+// an older bridge would treat a timer as "turn off now", so the button only shows once the bridge can run timers
+const timersReady = () => { const v = String(S.bridge?.version || '0').split('.').map(Number); return v[0] > 1 || (v[0] === 1 && (v[1] > 0 || v[2] >= 2)); };
+const offTimers = () => (Array.isArray(S.bridge?.timers) ? S.bridge.timers : []).filter(t => Date.parse(t.at) > Date.now() - 60e3);
+function timerLeft(t) {
+  const m = Math.max(0, Math.ceil((Date.parse(t.at) - Date.now()) / 60e3));
+  return m <= 0 ? 'now' : m < 60 ? `in ${m} min` : `in ${Math.floor(m / 60)} h${m % 60 ? ` ${m % 60} min` : ''}`;
+}
+function openOffTimer(place, ids, redraw) {
+  const cur = offTimers().find(t => t.label === place);
+  const devs = ids.map(id => S.devices.find(d => d.entity_id === id)).filter(Boolean);
+  const chosen = new Set(cur ? cur.entity_ids : devs.map(d => d.entity_id));
+  const PRE = [[15, '15 min'], [30, '30 min'], [45, '45 min'], [60, '1 hour'], [90, '1½ hours'], [120, '2 hours'], [180, '3 hours'], [240, '4 hours']];
+  let mins = cur ? Math.max(1, Math.ceil((Date.parse(cur.at) - Date.now()) / 60e3)) : 60;
+  const s = sheet(`<h3>⏲ Off timer — ${esc(place)}</h3>
+    ${cur ? `<div class="card small" style="margin:0">Set by ${esc(String(cur.by || '').split('@')[0])} · turns off ${esc(timerLeft(cur))} (at ${esc(new Date(cur.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))})</div>` : ''}
+    <div class="lab">Turn off in</div>
+    <div class="chips" id="tmPre" style="flex-wrap:wrap">${PRE.map(([m, l]) => `<button class="chip" data-m="${m}">${l}</button>`).join('')}</div>
+    <div class="row" style="align-items:center;gap:10px">
+      <input type="range" id="tmRange" min="5" max="480" step="5" style="flex:1">
+      <input type="number" id="tmNum" min="1" max="1440" inputmode="numeric" style="width:84px"> <span class="small muted">min</span>
+    </div>
+    <div class="small" id="tmAt"></div>
+    <div class="lab">What turns off</div>
+    <div class="card" style="padding:2px 14px"><div class="list">${devs.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => `<label style="display:flex;flex-direction:row;padding:9px 0;gap:12px;align-items:center;margin:0;font-weight:400"><input type="checkbox" data-dev="${esc(d.entity_id)}" ${chosen.has(d.entity_id) ? 'checked' : ''} style="width:20px;height:20px;flex:none;margin:0;padding:0"> <span style="flex:1">${esc(devName(d))}</span><span class="small muted">${d.state === 'on' ? 'on' : d.state === 'off' ? 'off' : esc(d.state)}</span></label>`).join('')}</div></div>
+    <div class="small muted">Lights that are off when the timer ends just stay off. The timer runs at the house, so it works even if your phone is off.</div>
+    <div class="row"><button class="btn primary grow" id="tmGo">${cur ? 'Update timer' : 'Start timer'}</button>${cur ? '<button class="btn" id="tmCancel">Cancel timer</button>' : ''}</div>`);
+  const sync = (from) => {
+    mins = Math.min(1440, Math.max(1, Math.round(mins)));
+    if (from !== 'range') $('#tmRange', s).value = Math.min(480, mins);
+    if (from !== 'num') $('#tmNum', s).value = mins;
+    $$('#tmPre [data-m]', s).forEach(b => b.setAttribute('aria-pressed', String(+b.dataset.m === mins)));
+    const at = new Date(Date.now() + mins * 60e3);
+    $('#tmAt', s).textContent = `Turns off at ${at.toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' })}${at.toDateString() !== new Date().toDateString() ? ' tomorrow' : ''}`;
+  };
+  $$('#tmPre [data-m]', s).forEach(b => b.onclick = () => { mins = +b.dataset.m; sync(); });
+  $('#tmRange', s).oninput = e => { mins = +e.target.value; sync('range'); };
+  $('#tmNum', s).oninput = e => { if (+e.target.value > 0) { mins = +e.target.value; sync('num'); } };
+  sync();
+  $$('[data-dev]', s).forEach(c => c.onchange = () => c.checked ? chosen.add(c.dataset.dev) : chosen.delete(c.dataset.dev));
+  const done = async () => { await sleep(1500); await loadDevices().catch(() => {}); redraw?.(); };
+  $('#tmGo', s).onclick = async () => {
+    const list = [...chosen]; if (!list.length) return toast('Pick at least one light or switch');
+    const b = $('#tmGo', s); b.disabled = true; b.textContent = 'Setting…';
+    const ok = await sendRaw({ action: 'bulk_off', payload: { entity_ids: list, timer: { minutes: mins, label: place } } }, `⏲ ${place} turns off ${timerLeft({ at: new Date(Date.now() + mins * 60e3).toISOString() })}`);
+    if (ok) { closeSheet(); done(); } else if ($('#tmGo')) { b.disabled = false; b.textContent = cur ? 'Update timer' : 'Start timer'; }
+  };
+  const cb = $('#tmCancel', s);
+  if (cb) cb.onclick = async () => {
+    cb.disabled = true;
+    const ok = await sendRaw({ action: 'bulk_off', payload: { entity_ids: cur.entity_ids, cancel_timer: cur.id } }, `Timer for ${place} cancelled`);
+    if (ok) { closeSheet(); done(); } else cb.disabled = false;
+  };
 }
 
 // ---- History charts ----
@@ -1664,6 +1720,7 @@ function viewLights() {
     el.innerHTML = `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">Scenes</div>${canControl() ? '<a class="small" href="/scene/new">＋ New scene</a>' : ''}</div>
         ${sc.length ? `<div class="card" style="padding:4px 14px">${sc.map(sceneRow).join('')}</div>` : '<div class="card small muted">No scenes yet.</div>'}
         </section>
+      ${offTimers().length ? `<section class="hsec"><div class="lab">Off timers</div><div class="card" style="padding:4px 14px">${offTimers().map(t => `<div class="row" style="justify-content:space-between;padding:8px 0"><span>⏲ <b>${esc(t.label)}</b> turns off ${esc(timerLeft(t))} <span class="small muted">· at ${esc(new Date(t.at).toLocaleTimeString([], { hour: 'numeric', minute: '2-digit' }))}</span></span>${canControl() ? `<button class="btn sm" data-timer="${esc(t.label)}" data-ids="${esc(t.entity_ids.join(','))}">Change</button>` : ''}</div>`).join('')}</div></section>` : ''}
       ${onIds.length ? `<section class="hsec"><div class="lab">On now <span class="count">${onIds.length}</span></div>
         <div class="card" style="padding:2px 14px"><div class="list">${all.filter(d => d.state === 'on').sort((x, y) => devName(x).localeCompare(devName(y))).map(d => devRow(d, true)).join('')}</div></div>
         ${canControl() ? `<button class="btn" data-bulk="off" data-ids="${onIds.join(',')}">Turn off every light (${onIds.length})</button>` : ''}</section>`
@@ -1671,7 +1728,10 @@ function viewLights() {
       ${groupByPlace(all).map(([place, list]) => {
         const on = list.filter(d => d.state === 'on').map(d => d.entity_id), offl = list.filter(d => d.state === 'off').map(d => d.entity_id);
         const bulk = !canControl() ? '' : on.length ? `<button class="btn sm" data-bulk="off" data-ids="${on.join(',')}">All off</button>` : offl.length > 1 ? `<button class="btn sm" data-bulk="on" data-ids="${offl.join(',')}">All on</button>` : '';
-        return `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">${esc(place)}</div>${bulk}</div><div class="card" style="padding:2px 14px"><div class="list">${list.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => devRow(d, false)).join('')}</div></div></section>`;
+        const tm = offTimers().find(t => t.label === place);
+        const tbtn = !canControl() || !timersReady() ? '' : tm ? `<button class="btn sm" data-timer="${esc(place)}" data-ids="${list.map(d => d.entity_id).join(',')}" style="color:var(--accent,#0b74b8)">⏲ ${esc(timerLeft(tm))}</button>`
+          : `<button class="btn sm" data-timer="${esc(place)}" data-ids="${list.map(d => d.entity_id).join(',')}" title="Off timer">⏲ Timer</button>`;
+        return `<section class="hsec"><div class="row" style="justify-content:space-between"><div class="lab">${esc(place)}</div><div class="row" style="gap:6px">${tbtn}${bulk}</div></div><div class="card" style="padding:2px 14px"><div class="list">${list.sort((a, b) => devName(a).localeCompare(devName(b))).map(d => devRow(d, false)).join('')}</div></div></section>`;
       }).join('') || '<div class="card muted">No lights or switches yet.</div>'}`;
     wireDevices(el, draw); wireScenes(el, draw);
   };
