@@ -8,7 +8,7 @@ import net from 'node:net';
 import WebSocket from 'ws';
 import { createClient } from '@supabase/supabase-js';
 
-const VERSION = '1.0.2';
+const VERSION = '1.0.3';
 const opts = JSON.parse(fs.readFileSync(process.env.OPTIONS_FILE || '/data/options.json', 'utf8'));
 // The add-on's Home Assistant token: in the environment, or (under s6-overlay) in its container-environment file
 const readFile = f => { try { return fs.readFileSync(f, 'utf8').trim(); } catch { return ''; } };
@@ -64,7 +64,7 @@ function ok(res, what) {
 }
 
 // ---------------------------------------------------------------- Home Assistant
-let ws = null, haReady = false, haVersion = '', msgId = 0;
+let ws = null, haReady = false, haVersion = '', msgId = 0, haTZ;
 const pending = new Map();
 
 function haConnect() {
@@ -103,6 +103,7 @@ async function startHa() {
   try {
     haVersion = await haConnect();
     log('Connected to Home Assistant', haVersion);
+    haCall({ type: 'get_config' }).then(c => { if (c?.time_zone) haTZ = c.time_zone; }).catch(() => {});
     await haCall({ type: 'subscribe_events', event_type: 'state_changed' });
     for (const t of ['area_registry_updated', 'device_registry_updated', 'entity_registry_updated', 'automation_triggered', 'script_started'])
       await haCall({ type: 'subscribe_events', event_type: t });
@@ -828,20 +829,47 @@ function setOffTimer(c) {
     if (t) log(`Off timer cancelled: ${t.label} (by ${c.requested_by})`);
     return t ? `Cancelled ${t.label}` : 'Timer already gone';
   }
-  const mins = Math.round(Number(p.timer.minutes));
-  if (!(mins >= 1 && mins <= 24 * 60)) throw new Error('Pick between 1 minute and 24 hours');
   const ids = (p.entity_ids || []).filter(id => ['switch', 'light'].includes(catalog.get(id)?.kind));
   if (!ids.length) throw new Error('Nothing to switch');
   const label = String(p.timer.label || 'Lights').slice(0, 60);
-  const at = new Date(Date.now() + mins * 60e3).toISOString();
+  const t = { id: `t${Date.now().toString(36)}`, label, entity_ids: ids, by: c.requested_by, set_at: new Date().toISOString() };
+  let msg;
+  if (p.timer.off_at) {                                            // one-time "on at … / off at …"
+    const on = p.timer.on_at ? Date.parse(p.timer.on_at) : NaN, off = Date.parse(p.timer.off_at);
+    if (isNaN(off) || off <= Date.now()) throw new Error('The off time has already passed');
+    if (off - Date.now() > 7 * 86400e3) throw new Error('Pick a time within the next week');
+    if (!isNaN(on) && on >= off) throw new Error('The off time has to be after the on time');
+    t.at = new Date(off).toISOString();
+    if (!isNaN(on)) { t.on_at = new Date(on).toISOString(); t.on_done = false; }
+    const hm = ms => new Date(ms).toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit', timeZone: haTZ });
+    msg = `${label}${t.on_at ? ` on at ${hm(on)},` : ''} off at ${hm(off)}`;
+  } else {
+    const mins = Math.round(Number(p.timer.minutes));
+    if (!(mins >= 1 && mins <= 24 * 60)) throw new Error('Pick between 1 minute and 24 hours');
+    t.at = new Date(Date.now() + mins * 60e3).toISOString();
+    msg = `${label} off in ${mins} min`;
+  }
   offTimers = offTimers.filter(x => x.label !== label);           // one timer per place: a new one replaces the old
-  offTimers.push({ id: `t${Date.now().toString(36)}`, label, entity_ids: ids, at, by: c.requested_by, set_at: new Date().toISOString() });
+  offTimers.push(t);
   saveTimers();
-  log(`Off timer: ${label} in ${mins} min (${ids.length} devices, by ${c.requested_by})`);
-  return `${label} off in ${mins} min`;
+  log(`Timer: ${msg} (${ids.length} devices, by ${c.requested_by})`);
+  runOffTimers().catch(() => {});                                  // an on time that's already here runs right away
+  return msg;
 }
 async function runOffTimers() {
   if (!haReady || !offTimers.length) return;
+  let changed = false;
+  for (const t of offTimers.filter(t => t.on_at && !t.on_done && Date.parse(t.on_at) <= Date.now() && Date.parse(t.at) > Date.now())) {
+    const ids = t.entity_ids.filter(id => catalog.has(id));
+    try {
+      if (ids.length) await haCall({ type: 'call_service', domain: 'homeassistant', service: 'turn_on', target: { entity_id: ids } });
+      const until = Date.now() + 60e3;
+      for (const id of ids) recentBy.set(id, { by: `Timer · ${t.label}`, until });
+      log(`Timer turned on: ${t.label} (${ids.length} devices)`);
+    } catch (e) { log(`Timer ${t.label} couldn't turn on:`, e.message); }
+    t.on_done = true; changed = true;
+  }
+  if (changed) saveTimers();
   const due = offTimers.filter(t => Date.parse(t.at) <= Date.now());
   if (!due.length) return;
   for (const t of due) {

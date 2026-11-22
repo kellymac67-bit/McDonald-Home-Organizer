@@ -65,3 +65,8 @@ the bridge stops 90 s after the last ask (or right away when the viewer taps Sto
 Lights tab → **⏲ Timer** on any room (e.g. Tree House) → pick 15 min … 4 hours (or any number of minutes, up to 24 h) and
 which lights/switches. The bridge keeps the timer in `/data/off_timers.json` (survives a restart), turns those devices off
 when it ends, and lists active timers in `ha_bridge_status.timers` so the app shows a countdown with **Change** / **Cancel**.
+
+### One-time on & off (1.0.3+)
+The room **⏲ Timer** also has **On & off at… (one time)**: pick a turn-on and a turn-off time (e.g. Tree House on 6:00 PM,
+off 10:30 PM). The bridge turns them on at the first time, off at the second, then forgets the timer.
+Repeating on/off times belong on scenes (scene editor → *Turn on automatically* / *Turn off automatically*).
