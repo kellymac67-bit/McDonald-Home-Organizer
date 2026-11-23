@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.16.1';
+const VERSION = '2.16.2';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1005,9 +1005,12 @@ function groupByPlace(list) {
 const SECTIONS = [['doors', 'Doors'], ['scenes', 'Scenes'], ['glance', 'At a glance & weather'], ['cameras', 'Cameras'], ['boxes', 'Recent boxes']];
 const GLANCE_MAX = 8;
 const weatherDevices = () => shownDevices().filter(d => d.platform === 'ambient_station' && ['sensor', 'binary_sensor'].includes(d.kind));
+// the station's outside air temperature — never an "Inside temp" / indoor / feels-like / dew point reading
+const INDOOR_RE = /indoor|inside|\bin\b|tempinf|_in_/i;
 function outdoorTemp() {
-  const w = weatherDevices().filter(d => d.device_class === 'temperature');
-  return w.find(d => /^(outdoor )?temp(erature)?$/i.test(devName(d).replace(/^.*?\b(temp)/i, '$1'))) || w.find(d => !/indoor|inside|feels|dew|chill|heat|max|min|in /i.test(devName(d))) || w[0];
+  const w = weatherDevices().filter(d => d.device_class === 'temperature' && !INDOOR_RE.test(shortName(d)) && !INDOOR_RE.test(d.entity_id));
+  const plain = w.filter(d => !/feels|dew|chill|heat|max|min|soil|leak|batt|\d/i.test(shortName(d)));
+  return plain.find(d => /^(outdoor |outside )?temp(erature)?$/i.test(shortName(d).trim())) || plain[0] || null;
 }
 async function loadPrefs() {
   const { data, error } = await sb.from('home_prefs').select('prefs').eq('email', S.email).maybeSingle();
@@ -1879,7 +1882,7 @@ function viewWeather(params) {
     if (!all.length) { el.innerHTML = '<div class="card muted">No weather station yet. Add the Ambient Weather Station integration in Home Assistant and give the station an Area.</div>'; return; }
     const short = shortName;
     const find = re => all.find(d => re.test(short(d)));
-    const ot = outdoorTemp(), feels = find(/feels/i), hum = all.find(d => d.device_class === 'humidity' && !/indoor|inside|\bin\b/i.test(short(d))), wind = find(/wind.*speed|^wind$/i), dir = find(/wind.*dir/i);
+    const ot = outdoorTemp(), feels = all.find(d => /feels/i.test(short(d)) && !INDOOR_RE.test(short(d)) && !INDOOR_RE.test(d.entity_id)), hum = all.find(d => d.device_class === 'humidity' && !/indoor|inside|\bin\b/i.test(short(d))), wind = find(/wind.*speed|^wind$/i), dir = find(/wind.*dir/i);
     const latest = all.reduce((m, d) => d.last_changed && d.last_changed > m ? d.last_changed : m, '');
     const val = d => d ? esc(devValue(d).text) : '';
     const groups = new Map();
