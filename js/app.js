@@ -2,7 +2,7 @@
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 import { SUPABASE_URL, SUPABASE_KEY, PUBLIC_URL } from './config.js';
 
-const VERSION = '2.16.0';
+const VERSION = '2.16.1';
 const recoveryLink = /type=recovery/.test(location.hash);
 const configured = /^https:\/\//.test(SUPABASE_URL) && SUPABASE_KEY && !SUPABASE_KEY.startsWith('PASTE');
 const sb = configured ? createClient(SUPABASE_URL, SUPABASE_KEY, {
@@ -1870,8 +1870,8 @@ function viewEditHome() {
 // ---- Weather (everything from the Ambient station) ----
 const W_GROUPS = [['Indoor', /indoor|inside|\bin\b/i], ['Temperature', /temp|feels|dew|chill|heat ?index/i], ['Wind', /wind|gust/i], ['Rain', /rain|precip/i],
   ['Humidity & pressure', /humid|press|baro/i], ['Sun', /solar|uv|lux|radiat|sun/i], ['Other', /./]];
-function viewWeather() {
-  header('Weather', { backBtn: true }); tabs('home');
+function viewWeather(params) {
+  header('Weather', { backBtn: true }); tabs(params?.get('from') === 'more' ? 'more' : 'home');
   view().innerHTML = '<div id="wv" style="display:flex;flex-direction:column;gap:16px"></div>';
   const draw = () => {
     const el = $('#wv'); if (!el) return;
@@ -2516,6 +2516,7 @@ function viewMore() {
       <a class="locrow" href="/categories"><span class="nm">Categories</span><span class="count">${S.categories.length}</span></a>
       <a class="locrow" href="/family"><span class="nm">Family members</span><span class="count">${S.members.length}</span></a>
       <a class="locrow" href="/edit-home"><span class="nm">Edit my Home screen</span><span class="muted">›</span></a>
+      <a class="locrow" href="/weather?from=more"><span class="nm">🌤️ Weather</span><span class="muted">${(() => { const ot = outdoorTemp(); return ot ? esc(devValue(ot).text) + ' outside' : 'not connected yet'; })()} ›</span></a>
       <a class="locrow" href="/energy"><span class="nm">⚡ Energy &amp; solar</span><span class="muted">${(() => { const e = energyState(); return e?.main ? esc(kw(watts(e.main))) + (e.solar ? ' · ☀️ ' + esc(kw(watts(e.solar))) : '') : 'not connected yet'; })()} ›</span></a>
       <a class="locrow" href="/activity"><span class="nm">Activity log</span><span class="muted">›</span></a>
       ${settingSwitches().length ? `<a class="locrow" href="/alerts"><span class="nm">🔔 Alert settings</span><span class="muted">${settingSwitches().filter(d => d.state === 'on').length} of ${settingSwitches().length} on ›</span></a>` : ''}
